@@ -105,14 +105,11 @@ function isPlanActive(plan) {
 function canUseGroup(plan, groupId) {
   if (!plan) return false;
 
-  if (plan.plan_type === "unlimited_groups") {
-    return true;
-  }
+  if (plan.plan_type === "unlimited_groups") return true;
 
   if (plan.plan_type === "limited_groups") {
     const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
     const limit = Number(plan.group_limit || 0);
-
     if (groups.includes(groupId)) return true;
     return groups.length < limit;
   }
@@ -375,7 +372,7 @@ async function pushLanguageMenu(to) {
 }
 
 /* =========================
-   DB HELPERS
+   DB
 ========================= */
 
 async function initDb() {
@@ -1059,6 +1056,8 @@ async function handleCommand(event, rawText) {
 }
 
 async function handleTextMessage(event) {
+  const startedAt = Date.now();
+
   const text = (event.message?.text || "").trim();
   if (!text) return;
 
@@ -1074,23 +1073,30 @@ async function handleTextMessage(event) {
 
   if (chatType === "user") {
     const sourceLang = detectSourceLangSimple(text);
-    const targetLangs = ["zh-TW", "th"].filter((lang) => lang !== sourceLang);
+    const targetLangs = ["zh-TW", "th"]
+      .filter((lang) => lang !== sourceLang)
+      .slice(0, 3);
 
-    const outputs = [];
-    for (const lang of targetLangs) {
-      try {
-        const translated = await translateToTarget(text, lang);
-        outputs.push(`[${lang}] ${translated}`);
-      } catch (err) {
-        console.error(`translate ${lang} error:`, err);
-      }
-    }
+    const results = await Promise.all(
+      targetLangs.map(async (lang) => {
+        try {
+          const translated = await translateToTarget(text, lang);
+          return `[${lang}] ${translated}`;
+        } catch (err) {
+          console.error(`translate ${lang} error:`, err);
+          return null;
+        }
+      })
+    );
+
+    const outputs = results.filter(Boolean);
 
     if (!outputs.length) {
       await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
       return;
     }
 
+    console.log("handleTextMessage user ms =", Date.now() - startedAt);
     await replyText(event.replyToken, outputs.join("\n"));
     return;
   }
@@ -1134,28 +1140,35 @@ async function handleTextMessage(event) {
   }
 
   const sourceLang = detectSourceLangSimple(text);
-  const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
+  const langsToTranslate = targetLangs
+    .filter((lang) => lang !== sourceLang)
+    .slice(0, 3);
 
   if (!langsToTranslate.length) {
     await replyText(event.replyToken, "目前沒有需要翻譯的新語言。");
     return;
   }
 
-  const outputs = [];
-  for (const lang of langsToTranslate) {
-    try {
-      const translated = await translateToTarget(text, lang);
-      outputs.push(`[${lang}] ${translated}`);
-    } catch (err) {
-      console.error(`translate ${lang} error:`, err);
-    }
-  }
+  const results = await Promise.all(
+    langsToTranslate.map(async (lang) => {
+      try {
+        const translated = await translateToTarget(text, lang);
+        return `[${lang}] ${translated}`;
+      } catch (err) {
+        console.error(`translate ${lang} error:`, err);
+        return null;
+      }
+    })
+  );
+
+  const outputs = results.filter(Boolean);
 
   if (!outputs.length) {
     await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
     return;
   }
 
+  console.log("handleTextMessage group ms =", Date.now() - startedAt);
   await replyText(event.replyToken, outputs.join("\n"));
 }
 
