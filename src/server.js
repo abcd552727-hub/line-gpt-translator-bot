@@ -98,14 +98,32 @@ function formatDateTime(dateString) {
 }
 
 function isPlanActive(plan) {
-  if (!plan || !plan.vip_expires_at) return false;
+  if (!plan) return false;
+
+  if (plan.plan_type === "free_trial") {
+    return true;
+  }
+
+  if (!plan.vip_expires_at) return false;
   return new Date(plan.vip_expires_at).getTime() > Date.now();
 }
 
 function canUseGroup(plan, groupId) {
   if (!plan) return false;
 
-  if (plan.plan_type === "unlimited_groups") return true;
+  if (plan.plan_type === "trial_7days") {
+    return true; // 7天試用：不限群組
+  }
+
+  if (plan.plan_type === "free_trial") {
+    const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
+    if (groups.includes(groupId)) return true;
+    return groups.length < 1; // 免費版：只限1群
+  }
+
+  if (plan.plan_type === "unlimited_groups") {
+    return true;
+  }
 
   if (plan.plan_type === "limited_groups") {
     const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
@@ -215,58 +233,6 @@ function buildLanguageMenuFlex() {
             ],
           },
         },
-        {
-          type: "bubble",
-          body: {
-            type: "box",
-            layout: "vertical",
-            contents: [
-              { type: "text", text: "更多語言 1", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "可複選", size: "sm", color: "#666666", align: "center", margin: "sm" },
-            ],
-          },
-          footer: {
-            type: "box",
-            layout: "vertical",
-            spacing: "sm",
-            contents: [
-              addButton("越南 vi", "vi"),
-              addButton("印尼 id", "id"),
-              addButton("緬甸 my", "my"),
-              addButton("日本 ja", "ja"),
-              removeButton("越南 vi", "vi"),
-              removeButton("印尼 id", "id"),
-              removeButton("緬甸 my", "my"),
-              removeButton("日本 ja", "ja"),
-            ],
-          },
-        },
-        {
-          type: "bubble",
-          body: {
-            type: "box",
-            layout: "vertical",
-            contents: [
-              { type: "text", text: "更多語言 2", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "營運版擴充", size: "sm", color: "#666666", align: "center", margin: "sm" },
-            ],
-          },
-          footer: {
-            type: "box",
-            layout: "vertical",
-            spacing: "sm",
-            contents: [
-              addButton("菲律賓 tl", "tl"),
-              addButton("印度 hi", "hi"),
-              addButton("土耳其 tr", "tr"),
-              addButton("法文 fr", "fr"),
-              removeButton("菲律賓 tl", "tl"),
-              removeButton("印度 hi", "hi"),
-              removeButton("土耳其 tr", "tr"),
-              removeButton("法文 fr", "fr"),
-            ],
-          },
-        },
       ],
     },
   };
@@ -276,7 +242,9 @@ function buildStatusText(group, plan) {
   return [
     `ownerId：${group?.owner_id || "未綁定"}`,
     `方案：${plan?.plan_type || "未開通"}`,
-    `群組上限：${plan?.plan_type === "unlimited_groups" ? "不限" : (plan?.group_limit ?? "未設定")}`,
+    `試用類型：${plan?.trial_type || "無"}`,
+    `每日上限：${plan?.daily_limit ?? "不限"}`,
+    `群組上限：${plan?.plan_type === "unlimited_groups" || plan?.plan_type === "trial_7days" ? "不限" : (plan?.group_limit ?? "1")}`,
     `已綁群組：${(plan?.bound_groups || []).length}`,
     `目前語言：${group?.langs?.length ? group.langs.join(", ") : "尚未設定"}`,
     `管理員數量：${group?.admins?.length || 0}`,
@@ -293,7 +261,9 @@ function buildPlanText(userId, plan) {
   return [
     `使用者：${userId}`,
     `方案：${plan.plan_type}`,
-    `群組上限：${plan.plan_type === "unlimited_groups" ? "不限" : (plan.group_limit ?? "未設定")}`,
+    `試用類型：${plan.trial_type || "無"}`,
+    `每日上限：${plan.daily_limit ?? "不限"}`,
+    `群組上限：${plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days" ? "不限" : (plan.group_limit ?? "1")}`,
     `已綁群組：${(plan.bound_groups || []).length}`,
     `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
     `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
@@ -307,10 +277,11 @@ function buildUserHelpText() {
     "/取得時間",
     "/price",
     "/langs",
+    "/myid",
     "",
     "說明：",
-    "群組翻譯由管理人設定語言",
-    "方案到期後會自動停用",
+    "新加入可先使用每日免費20句",
+    "7天試用請聯絡管理員開通",
     `續費請聯絡 LINE：${CONTACT_LINE_ID}`,
   ].join("\n");
 }
@@ -328,7 +299,6 @@ function buildAdminHelpText(superAdmin) {
     "/menu",
     "/bind",
     "/unbind",
-    "/trial3",
     "/plan1",
     "/plan3",
     "/plan5",
@@ -345,6 +315,7 @@ function buildAdminHelpText(superAdmin) {
       "/開通3群 使用者ID",
       "/開通5群 使用者ID",
       "/開通不限30 使用者ID",
+      "/試用7天 使用者ID",
       "/查方案 使用者ID",
       "/停用 使用者ID"
     );
@@ -388,12 +359,33 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE plans
+      ADD COLUMN IF NOT EXISTS daily_limit INTEGER;
+  `);
+
+  await pool.query(`
+    ALTER TABLE plans
+      ADD COLUMN IF NOT EXISTS trial_type TEXT;
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS group_subscriptions (
       chat_id TEXT PRIMARY KEY,
       owner_id TEXT,
       langs JSONB NOT NULL DEFAULT '[]'::jsonb,
       admins JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_logs (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(user_id, group_id, date)
     );
   `);
 }
@@ -443,7 +435,7 @@ async function saveGroup(group) {
 
 async function getPlan(userId) {
   const result = await pool.query(
-    `SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, created_at
+    `SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, created_at, daily_limit, trial_type
      FROM plans
      WHERE user_id = $1`,
     [userId]
@@ -454,8 +446,8 @@ async function getPlan(userId) {
 async function ensurePlanDb(userId) {
   await pool.query(
     `
-    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups)
-    VALUES ($1, NULL, NULL, NULL, '[]'::jsonb)
+    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type)
+    VALUES ($1, NULL, NULL, NULL, '[]'::jsonb, NULL, NULL)
     ON CONFLICT (user_id) DO NOTHING
     `,
     [userId]
@@ -467,14 +459,16 @@ async function ensurePlanDb(userId) {
 async function savePlan(plan) {
   await pool.query(
     `
-    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups)
-    VALUES ($1, $2, $3, $4, $5::jsonb)
+    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type)
+    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
     ON CONFLICT (user_id)
     DO UPDATE SET
       plan_type = EXCLUDED.plan_type,
       group_limit = EXCLUDED.group_limit,
       vip_expires_at = EXCLUDED.vip_expires_at,
-      bound_groups = EXCLUDED.bound_groups
+      bound_groups = EXCLUDED.bound_groups,
+      daily_limit = EXCLUDED.daily_limit,
+      trial_type = EXCLUDED.trial_type
     `,
     [
       plan.user_id,
@@ -482,8 +476,45 @@ async function savePlan(plan) {
       plan.group_limit,
       plan.vip_expires_at,
       JSON.stringify(plan.bound_groups || []),
+      plan.daily_limit ?? null,
+      plan.trial_type ?? null,
     ]
   );
+}
+
+async function checkDailyLimit(userId, groupId, dailyLimit) {
+  if (!dailyLimit) return { allowed: true, used: 0, limit: null };
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const result = await pool.query(
+    `SELECT count FROM usage_logs WHERE user_id = $1 AND group_id = $2 AND date = $3`,
+    [userId, groupId, today]
+  );
+
+  if (result.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO usage_logs (user_id, group_id, date, count)
+       VALUES ($1, $2, $3, 1)`,
+      [userId, groupId, today]
+    );
+    return { allowed: true, used: 1, limit: dailyLimit };
+  }
+
+  const currentCount = result.rows[0].count;
+
+  if (currentCount >= dailyLimit) {
+    return { allowed: false, used: currentCount, limit: dailyLimit };
+  }
+
+  await pool.query(
+    `UPDATE usage_logs
+     SET count = count + 1
+     WHERE user_id = $1 AND group_id = $2 AND date = $3`,
+    [userId, groupId, today]
+  );
+
+  return { allowed: true, used: currentCount + 1, limit: dailyLimit };
 }
 
 function isAdmin(group, userId) {
@@ -521,13 +552,39 @@ function unbindGroupFromOwner(plan, groupId) {
   plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
 }
 
-function createPlanObject(userId, planType, groupLimit, days) {
+function createPaidPlanObject(userId, planType, groupLimit, days) {
   return {
     user_id: userId,
     plan_type: planType,
     group_limit: groupLimit,
     vip_expires_at: addDays(days),
     bound_groups: [],
+    daily_limit: null,
+    trial_type: null,
+  };
+}
+
+function createFreeTrialPlanObject(userId) {
+  return {
+    user_id: userId,
+    plan_type: "free_trial",
+    group_limit: 1,
+    vip_expires_at: null,
+    bound_groups: [],
+    daily_limit: 20,
+    trial_type: "每日免費20句",
+  };
+}
+
+function create7DayTrialPlanObject(userId) {
+  return {
+    user_id: userId,
+    plan_type: "trial_7days",
+    group_limit: null,
+    vip_expires_at: addDays(7),
+    bound_groups: [],
+    daily_limit: null,
+    trial_type: "7天試用不限群組",
   };
 }
 
@@ -538,6 +595,8 @@ function disablePlanObject(plan, userId) {
     group_limit: plan?.group_limit ?? null,
     vip_expires_at: new Date(Date.now() - 1000).toISOString(),
     bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
+    daily_limit: plan?.daily_limit ?? null,
+    trial_type: plan?.trial_type ?? null,
   };
 }
 
@@ -561,12 +620,17 @@ async function handleFollow(event) {
     group.owner_id = userId;
   }
   addAdmin(group, userId);
-
   await saveGroup(group);
+
+  let plan = await getPlan(userId);
+  if (!plan) {
+    plan = createFreeTrialPlanObject(userId);
+    await savePlan(plan);
+  }
 
   await replyMessages(event.replyToken, [
     buildLanguageMenuFlex(),
-    { type: "text", text: "歡迎使用翻譯機器人。你目前是管理員，可以設定語言與方案。" },
+    { type: "text", text: "歡迎使用翻譯機器人。你目前可每日免費使用 20 句。" },
   ]);
 }
 
@@ -582,29 +646,34 @@ async function handlePostback(event) {
     return;
   }
 
-  if (!group.owner_id) {
-    const candidatePlan = await getPlan(userId);
+  let userPlan = await getPlan(userId);
 
-    if (!isPlanActive(candidatePlan)) {
+  if (!userPlan) {
+    userPlan = createFreeTrialPlanObject(userId);
+    await savePlan(userPlan);
+  }
+
+  if (!group.owner_id) {
+    if (!isPlanActive(userPlan)) {
       await replyText(event.replyToken, "你目前沒有有效方案，無法設定此群語言。");
       return;
     }
 
-    if (!canUseGroup(candidatePlan, chatId)) {
+    if (!canUseGroup(userPlan, chatId)) {
       await replyText(event.replyToken, "你的方案可用群組數量已滿，無法綁定此群。");
       return;
     }
 
     group.owner_id = userId;
     addAdmin(group, userId);
-    bindGroupToOwner(candidatePlan, chatId);
+    bindGroupToOwner(userPlan, chatId);
 
     if (action === "add_lang" && !group.langs.includes(lang)) {
       group.langs.push(lang);
     }
 
     await saveGroup(group);
-    await savePlan(candidatePlan);
+    await savePlan(userPlan);
 
     await replyText(
       event.replyToken,
@@ -660,11 +729,16 @@ async function handleCommand(event, rawText) {
   if ((group.admins || []).length === 0 && userId) {
     addAdmin(group, userId);
   }
-
   await saveGroup(group);
 
   const ownerId = group.owner_id;
-  const plan = ownerId ? await ensurePlanDb(ownerId) : null;
+  let plan = ownerId ? await getPlan(ownerId) : null;
+
+  if (ownerId && !plan) {
+    plan = createFreeTrialPlanObject(ownerId);
+    await savePlan(plan);
+  }
+
   const admin = isAdmin(group, userId);
   const superAdmin = isSuperAdmin(userId);
   const canAdmin = admin || superAdmin;
@@ -703,7 +777,7 @@ async function handleCommand(event, rawText) {
       event.replyToken,
       plan?.vip_expires_at
         ? `你的使用期限到：${formatDateTime(plan.vip_expires_at)}`
-        : "目前尚未開通方案。"
+        : `目前方案：${plan?.plan_type || "未開通"}`
     );
     return true;
   }
@@ -713,11 +787,9 @@ async function handleCommand(event, rawText) {
       event.replyToken,
       [
         "翻譯機器人方案",
-        "1群 / 30天",
-        "3群 / 30天",
-        "5群 / 30天",
-        "30天不限群組",
-        "90天不限群組",
+        "新加入可每日免費20句",
+        "可指定開通 7天試用不限群組",
+        "正式方案請聯絡管理員",
         "",
         `詳情與開通請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
       ].join("\n")
@@ -791,29 +863,13 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/trial3") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以開通試用。");
-      return true;
-    }
-
-    const nextPlan = createPlanObject(ownerId, "limited_groups", 1, 3);
-    await savePlan(nextPlan);
-
-    await replyText(
-      event.replyToken,
-      `已開通 3 天試用\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
-    );
-    return true;
-  }
-
   if (cmd === "/plan1") {
     if (!canAdmin) {
       await replyText(event.replyToken, "只有管理員可以設定方案。");
       return true;
     }
 
-    const nextPlan = createPlanObject(ownerId, "limited_groups", 1, 30);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 1, 30);
     await savePlan(nextPlan);
 
     await replyText(event.replyToken, `已開通 1 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
@@ -826,7 +882,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(ownerId, "limited_groups", 3, 30);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 3, 30);
     await savePlan(nextPlan);
 
     await replyText(event.replyToken, `已開通 3 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
@@ -839,7 +895,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(ownerId, "limited_groups", 5, 30);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 5, 30);
     await savePlan(nextPlan);
 
     await replyText(event.replyToken, `已開通 5 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
@@ -852,7 +908,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(ownerId, "unlimited_groups", null, 30);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30);
     await savePlan(nextPlan);
 
     await replyText(event.replyToken, `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
@@ -865,7 +921,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(ownerId, "unlimited_groups", null, 90);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 90);
     await savePlan(nextPlan);
 
     await replyText(event.replyToken, `已開通 90 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
@@ -927,7 +983,12 @@ async function handleCommand(event, rawText) {
     group.owner_id = arg;
     addAdmin(group, arg);
     await saveGroup(group);
-    await ensurePlanDb(arg);
+
+    let targetPlan = await getPlan(arg);
+    if (!targetPlan) {
+      targetPlan = createFreeTrialPlanObject(arg);
+      await savePlan(targetPlan);
+    }
 
     await replyText(event.replyToken, `已設定 owner：${arg}`);
     return true;
@@ -944,7 +1005,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(arg, "limited_groups", 1, 30);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30);
     await savePlan(nextPlan);
 
     await replyText(
@@ -965,7 +1026,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(arg, "limited_groups", 3, 30);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 3, 30);
     await savePlan(nextPlan);
 
     await replyText(
@@ -986,7 +1047,7 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(arg, "limited_groups", 5, 30);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 5, 30);
     await savePlan(nextPlan);
 
     await replyText(
@@ -1007,12 +1068,33 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const nextPlan = createPlanObject(arg, "unlimited_groups", null, 30);
+    const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30);
     await savePlan(nextPlan);
 
     await replyText(
       event.replyToken,
       `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/試用7天") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/試用7天 使用者ID");
+      return true;
+    }
+
+    const nextPlan = create7DayTrialPlanObject(arg);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 7天試用（不限群組）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -1068,8 +1150,79 @@ async function handleTextMessage(event) {
 
   const chatType = getChatType(event);
   const chatId = getChatId(event);
+  const userId = event.source.userId;
 
   const group = await ensureGroupDb(chatId);
+
+  let actingPlan = null;
+  let limitUserId = userId;
+
+  if (chatType === "user") {
+    actingPlan = await getPlan(userId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(userId);
+      await savePlan(actingPlan);
+    }
+  } else {
+    const ownerId = group.owner_id;
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
+      return;
+    }
+
+    actingPlan = await getPlan(ownerId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(ownerId);
+      await savePlan(actingPlan);
+    }
+    limitUserId = ownerId;
+  }
+
+  if (!isPlanActive(actingPlan)) {
+    await replyText(
+      event.replyToken,
+      [
+        "本群翻譯方案已到期",
+        "目前無法使用語言設定與自動翻譯",
+        "",
+        `如需續費開通`,
+        `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (chatType !== "user" && !canUseGroup(actingPlan, chatId)) {
+    await replyText(event.replyToken, "此方案可用群組數量已滿，請升級方案。");
+    return;
+  }
+
+  if (chatType !== "user" && !(actingPlan.bound_groups || []).includes(chatId)) {
+    bindGroupToOwner(actingPlan, chatId);
+    await savePlan(actingPlan);
+  }
+
+  if (actingPlan.daily_limit) {
+    const limitResult = await checkDailyLimit(
+      limitUserId,
+      chatId,
+      actingPlan.daily_limit
+    );
+
+    if (!limitResult.allowed) {
+      await replyText(
+        event.replyToken,
+        [
+          "你目前為免費試用方案",
+          `今日免費 ${actingPlan.daily_limit} 句已用完`,
+          "",
+          `如需升級或開通 7 天試用`,
+          `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+        ].join("\n")
+      );
+      return;
+    }
+  }
 
   if (chatType === "user") {
     const sourceLang = detectSourceLangSimple(text);
@@ -1099,38 +1252,6 @@ async function handleTextMessage(event) {
     console.log("handleTextMessage user ms =", Date.now() - startedAt);
     await replyText(event.replyToken, outputs.join("\n"));
     return;
-  }
-
-  const ownerId = group.owner_id;
-  const plan = ownerId ? await getPlan(ownerId) : null;
-
-  if (!ownerId) {
-    await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
-    return;
-  }
-
-  if (!isPlanActive(plan)) {
-    await replyText(
-      event.replyToken,
-      [
-        "本群翻譯方案已到期",
-        "目前無法使用語言設定與自動翻譯",
-        "",
-        `如需續費開通`,
-        `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
-      ].join("\n")
-    );
-    return;
-  }
-
-  if (!canUseGroup(plan, chatId)) {
-    await replyText(event.replyToken, "此方案可用群組數量已滿，請升級方案。");
-    return;
-  }
-
-  if (!(plan.bound_groups || []).includes(chatId)) {
-    bindGroupToOwner(plan, chatId);
-    await savePlan(plan);
   }
 
   const targetLangs = group.langs || [];
