@@ -112,13 +112,13 @@ function canUseGroup(plan, groupId) {
   if (!plan) return false;
 
   if (plan.plan_type === "trial_7days") {
-    return true; // 7天試用：不限群組
+    return true;
   }
 
   if (plan.plan_type === "free_trial") {
     const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
     if (groups.includes(groupId)) return true;
-    return groups.length < 1; // 免費版：只限1群
+    return groups.length < 1;
   }
 
   if (plan.plan_type === "unlimited_groups") {
@@ -297,20 +297,20 @@ function buildAdminHelpText(superAdmin) {
     "/price",
     "/myid",
     "/menu",
-    "/bind",
-    "/unbind",
-    "/plan1",
-    "/plan3",
-    "/plan5",
-    "/planu30",
-    "/planu90",
-    "/setadmin 使用者ID",
-    "/deladmin 使用者ID",
-    "/setowner 使用者ID",
   ];
 
   if (superAdmin) {
     lines.push(
+      "/bind",
+      "/unbind",
+      "/plan1",
+      "/plan3",
+      "/plan5",
+      "/planu30",
+      "/planu90",
+      "/setadmin 使用者ID",
+      "/deladmin 使用者ID",
+      "/setowner 使用者ID",
       "/開通1群 使用者ID",
       "/開通3群 使用者ID",
       "/開通5群 使用者ID",
@@ -341,10 +341,6 @@ async function pushLanguageMenu(to) {
     { type: "text", text: "請直接按語言。第一個成功設定的人會成為此群管理人。" },
   ]);
 }
-
-/* =========================
-   DB
-========================= */
 
 async function initDb() {
   await pool.query(`
@@ -522,7 +518,7 @@ function isAdmin(group, userId) {
   return (group?.admins || []).includes(userId);
 }
 
-function canManageGroup(group, plan, userId) {
+function canLanguageManage(group, plan, userId) {
   return isAdmin(group, userId) && isPlanActive(plan);
 }
 
@@ -599,10 +595,6 @@ function disablePlanObject(plan, userId) {
     trial_type: plan?.trial_type ?? null,
   };
 }
-
-/* =========================
-   EVENTS
-========================= */
 
 async function handleJoin(event) {
   const chatId = getChatId(event);
@@ -684,7 +676,7 @@ async function handlePostback(event) {
 
   const ownerPlan = await getPlan(group.owner_id);
 
-  if (!isSuperAdmin(userId) && !canManageGroup(group, ownerPlan, userId)) {
+  if (!isSuperAdmin(userId) && !canLanguageManage(group, ownerPlan, userId)) {
     await replyText(event.replyToken, "只有此群的授權管理人可以設定語言，或方案可能已到期。");
     return;
   }
@@ -741,10 +733,9 @@ async function handleCommand(event, rawText) {
 
   const admin = isAdmin(group, userId);
   const superAdmin = isSuperAdmin(userId);
-  const canAdmin = admin || superAdmin;
 
   if (cmd === "/help") {
-    if (canAdmin) {
+    if (admin || superAdmin) {
       await replyText(event.replyToken, buildAdminHelpText(superAdmin));
     } else {
       await replyText(event.replyToken, buildUserHelpText());
@@ -803,7 +794,7 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/menu") {
-    if (!superAdmin && !canManageGroup(group, plan, userId)) {
+    if (!superAdmin && !canLanguageManage(group, plan, userId)) {
       await replyText(event.replyToken, "你目前不能設定語言，可能是權限不足或方案已到期。");
       return true;
     }
@@ -815,8 +806,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/bind") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以綁定群組。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -845,8 +836,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/unbind") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以解除綁定。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -864,8 +855,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/plan1") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定方案。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -877,8 +868,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/plan3") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定方案。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -890,8 +881,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/plan5") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定方案。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -903,8 +894,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/planu30") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定方案。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -916,8 +907,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/planu90") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定方案。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -929,8 +920,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/setadmin") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以新增管理員。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -947,8 +938,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/deladmin") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以移除管理員。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -970,8 +961,8 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/setowner") {
-    if (!canAdmin) {
-      await replyText(event.replyToken, "只有管理員可以設定 owner。");
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
@@ -1203,11 +1194,7 @@ async function handleTextMessage(event) {
   }
 
   if (actingPlan.daily_limit) {
-    const limitResult = await checkDailyLimit(
-      limitUserId,
-      chatId,
-      actingPlan.daily_limit
-    );
+    const limitResult = await checkDailyLimit(limitUserId, chatId, actingPlan.daily_limit);
 
     if (!limitResult.allowed) {
       await replyText(
