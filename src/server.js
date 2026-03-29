@@ -149,25 +149,191 @@ function detectSourceLangSimple(text) {
   return "auto";
 }
 
-async function translateToTarget(text, targetLang) {
+function getLangPureName(lang) {
+  const map = {
+    "zh-TW": "繁體中文",
+    "zh-CN": "簡體中文",
+    th: "泰文",
+    en: "英文",
+    vi: "越南文",
+    id: "印尼文",
+    my: "緬甸文",
+    ja: "日文",
+    ko: "韓文",
+    tl: "菲律賓文",
+    hi: "印度文",
+    tr: "土耳其文",
+    fr: "法文",
+    ms: "馬來文",
+    km: "高棉文",
+    lo: "寮文",
+    ar: "阿拉伯文",
+  };
+  return map[lang] || lang;
+}
+
+function hasChinese(text = "") {
+  return /[\u4E00-\u9FFF]/.test(text);
+}
+
+function hasThai(text = "") {
+  return /[\u0E00-\u0E7F]/.test(text);
+}
+
+function looksLikeThaiFamilyText(text = "") {
+  return /[\u0E00-\u0E7F]/.test(text);
+}
+
+function cleanupTranslation(text = "") {
+  return text
+    .replace(/^\s*翻譯[:：]\s*/i, "")
+    .replace(/^\s*translation[:：]\s*/i, "")
+    .replace(/\[.*?\]/g, "")
+    .replace(/【.*?】/g, "")
+    .replace(/^["「『]+|["」』]+$/g, "")
+    .trim();
+}
+
+async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
+  const chineseName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
+
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     input: `
-你是一個翻譯機器，只負責翻譯，不解釋、不改寫、不加前言。
+你是專業的泰語翻譯助手，擅長理解泰國不同地區的說法。
 
-規則：
-1. 只輸出 ${targetLang} 的翻譯結果
-2. 保留原本語氣
-3. 不要加引號
-4. 不要加「翻譯：」這類字樣
-5. 翻譯要自然、簡潔、口語
+你的任務：
+把使用者輸入的內容，從泰語或泰國各地區常見說法，翻譯成自然的${chineseName}。
 
-請翻譯以下內容：
+你必須先在內部理解這段內容比較接近：
+- 標準泰語
+- 北部說法
+- 東北 Isan 說法
+- 南部說法
+- 混合說法
+但不要把判斷結果顯示出來。
+
+嚴格規則：
+1. 只輸出${chineseName}
+2. 不可輸出泰文原文
+3. 不可解釋
+4. 不可標註方言類型
+5. 如果有地方詞、俚語、口語、縮寫，要依上下文理解後翻成自然中文
+6. 若句子偏口語，中文也要翻得自然，不要太書面
+7. 只輸出最終翻譯結果
+
+內容：
 ${text}
     `.trim(),
   });
 
-  return (response.output_text || "").trim();
+  let output = cleanupTranslation(response.output_text || "");
+
+  if (hasThai(output)) {
+    const retry = await openai.responses.create({
+      model: OPENAI_MODEL,
+      input: `
+你上一版翻譯不合格，因為結果裡還有泰文。
+
+現在請重新把下面內容翻成${chineseName}。
+
+規則：
+1. 只能輸出${chineseName}
+2. 不可出現任何泰文
+3. 不可解釋
+4. 不可顯示方言分類
+5. 只輸出翻譯結果
+
+內容：
+${text}
+      `.trim(),
+    });
+
+    output = cleanupTranslation(retry.output_text || output);
+  }
+
+  return output;
+}
+
+async function translateToTarget(text, targetLang) {
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && looksLikeThaiFamilyText(text)) {
+    return await translateThaiDialectToChinese(text, targetLang);
+  }
+
+  const targetName = getLangPureName(targetLang);
+
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    input: `
+你是專業翻譯助手。
+
+你的任務：
+把使用者提供的內容，完整翻譯成「${targetName}」。
+
+嚴格規則：
+1. 只能輸出 ${targetName}
+2. 不可夾雜原文
+3. 不可保留中文、英文或其他語言詞
+4. 不可解釋、不可補充、不可摘要
+5. 保留原本語氣，翻譯要自然口語
+6. 不要加引號
+7. 不要加「翻譯：」這類前綴
+8. 只輸出最終翻譯結果
+
+要翻譯的內容：
+${text}
+    `.trim(),
+  });
+
+  let output = cleanupTranslation(response.output_text || "");
+
+  if (targetLang === "th" && hasChinese(output)) {
+    const retry = await openai.responses.create({
+      model: OPENAI_MODEL,
+      input: `
+你上一版翻譯不合格，因為結果裡還有中文。
+
+現在請重新把下面內容完整翻譯成泰文。
+
+嚴格規則：
+1. 只能輸出純泰文
+2. 不可出現任何中文
+3. 不可出現英文原文
+4. 不可解釋
+5. 只輸出翻譯結果
+
+內容：
+${text}
+      `.trim(),
+    });
+
+    output = cleanupTranslation(retry.output_text || output);
+  }
+
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(output)) {
+    const retry = await openai.responses.create({
+      model: OPENAI_MODEL,
+      input: `
+你上一版翻譯不合格，因為結果裡還有泰文。
+
+現在請重新把下面內容完整翻譯成${targetName}。
+
+嚴格規則：
+1. 只能輸出${targetName}
+2. 不可出現泰文
+3. 不可出現其他原文
+4. 不可解釋
+5. 只輸出翻譯結果
+
+內容：
+${text}
+      `.trim(),
+    });
+
+    output = cleanupTranslation(retry.output_text || output);
+  }
+
+  return output;
 }
 
 function parsePostbackData(data) {
@@ -1350,9 +1516,8 @@ async function handleTextMessage(event) {
 
   if (chatType === "user") {
     const sourceLang = detectSourceLangSimple(text);
-    const targetLangs = ["zh-TW", "th"]
-      .filter((lang) => lang !== sourceLang)
-      .slice(0, 3);
+    const defaultTargetLangs = ["zh-TW", "th"];
+    const targetLangs = defaultTargetLangs.filter((lang) => lang !== sourceLang);
 
     const results = await Promise.all(
       targetLangs.map(async (lang) => {
