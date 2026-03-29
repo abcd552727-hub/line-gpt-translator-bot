@@ -374,7 +374,11 @@ function buildStatusText(group, plan) {
     `方案：${plan?.plan_type || "未開通"}`,
     `試用類型：${plan?.trial_type || "無"}`,
     `每日上限：${plan?.daily_limit ?? "不限"}`,
-    `群組上限：${plan?.plan_type === "unlimited_groups" || plan?.plan_type === "trial_7days" ? "不限" : (plan?.group_limit ?? "1")}`,
+    `群組上限：${
+      plan?.plan_type === "unlimited_groups" || plan?.plan_type === "trial_7days"
+        ? "不限"
+        : (plan?.group_limit ?? "1")
+    }`,
     `已綁群組：${(plan?.bound_groups || []).length}`,
     `目前語言：${group?.langs?.length ? group.langs.join(", ") : "尚未設定"}`,
     `管理員數量：${group?.admins?.length || 0}`,
@@ -393,7 +397,11 @@ function buildPlanText(userId, plan) {
     `方案：${plan.plan_type}`,
     `試用類型：${plan.trial_type || "無"}`,
     `每日上限：${plan.daily_limit ?? "不限"}`,
-    `群組上限：${plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days" ? "不限" : (plan.group_limit ?? "1")}`,
+    `群組上限：${
+      plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
+        ? "不限"
+        : (plan.group_limit ?? "1")
+    }`,
     `已綁群組：${(plan.bound_groups || []).length}`,
     `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
     `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
@@ -403,11 +411,11 @@ function buildPlanText(userId, plan) {
 function buildUserHelpText() {
   return [
     "可用指令：",
-    "/help",
-    "/取得時間",
-    "/price",
-    "/langs",
-    "/myid",
+    "/幫助",
+    "/到期時間",
+    "/價格",
+    "/語言",
+    "/我的ID",
     "",
     "說明：",
     "新加入可先使用每日免費20句",
@@ -419,32 +427,31 @@ function buildUserHelpText() {
 function buildAdminHelpText(superAdmin) {
   const lines = [
     "管理版指令：",
-    "/help",
-    "/status",
-    "/langs",
-    "/myplan",
-    "/取得時間",
-    "/price",
-    "/myid",
-    "/menu",
+    "/幫助",
+    "/狀態",
+    "/語言",
+    "/我的方案",
+    "/到期時間",
+    "/價格",
+    "/我的ID",
+    "/語言選單",
   ];
 
   if (superAdmin) {
     lines.push(
-      "/bind",
-      "/unbind",
-      "/plan1",
-      "/plan3",
-      "/plan5",
-      "/planu30",
-      "/planu90",
-      "/setadmin 使用者ID",
-      "/deladmin 使用者ID",
-      "/setowner 使用者ID",
+      "/綁定",
+      "/解除綁定",
+      "/1群方案",
+      "/3群方案",
+      "/5群方案",
+      "/開通不限30",
+      "/開通不限90",
+      "/新增管理員 使用者ID",
+      "/刪除管理員 使用者ID",
+      "/設定擁有者 使用者ID",
       "/開通1群 使用者ID",
       "/開通3群 使用者ID",
       "/開通5群 使用者ID",
-      "/開通不限30 使用者ID",
       "/試用7天 使用者ID",
       "/查方案 使用者ID",
       "/停用 使用者ID"
@@ -864,7 +871,7 @@ async function handleCommand(event, rawText) {
   const admin = isAdmin(group, userId);
   const superAdmin = isSuperAdmin(userId);
 
-  if (cmd === "/help") {
+  if (cmd === "/help" || cmd === "/幫助") {
     if (admin || superAdmin) {
       await replyText(event.replyToken, buildAdminHelpText(superAdmin));
     } else {
@@ -873,17 +880,17 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/myid") {
+  if (cmd === "/myid" || cmd === "/我的ID") {
     await replyText(event.replyToken, `你的 userId：${userId || "目前抓不到 userId"}`);
     return true;
   }
 
-  if (cmd === "/status") {
+  if (cmd === "/status" || cmd === "/狀態") {
     await replyText(event.replyToken, buildStatusText(group, plan));
     return true;
   }
 
-  if (cmd === "/langs") {
+  if (cmd === "/langs" || cmd === "/語言") {
     await replyText(
       event.replyToken,
       group.langs.length
@@ -893,7 +900,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/expire" || cmd === "/取得時間") {
+  if (cmd === "/expire" || cmd === "/取得時間" || cmd === "/到期時間") {
     await replyText(
       event.replyToken,
       plan?.vip_expires_at
@@ -903,7 +910,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/price") {
+  if (cmd === "/price" || cmd === "/價格") {
     await replyText(
       event.replyToken,
       [
@@ -918,12 +925,12 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/myplan") {
+  if (cmd === "/myplan" || cmd === "/我的方案") {
     await replyText(event.replyToken, buildStatusText(group, plan));
     return true;
   }
 
-  if (cmd === "/menu") {
+  if (cmd === "/menu" || cmd === "/語言選單") {
     if (!superAdmin && !canLanguageManage(group, plan, userId)) {
       await replyText(event.replyToken, "你目前不能設定語言，可能是權限不足或方案已到期。");
       return true;
@@ -935,7 +942,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/bind") {
+  if (cmd === "/bind" || cmd === "/綁定") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -965,7 +972,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/unbind") {
+  if (cmd === "/unbind" || cmd === "/解除綁定") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -984,7 +991,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/plan1") {
+  if (cmd === "/plan1" || cmd === "/1群方案") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -997,7 +1004,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/plan3") {
+  if (cmd === "/plan3" || cmd === "/3群方案") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -1010,7 +1017,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/plan5") {
+  if (cmd === "/plan5" || cmd === "/5群方案") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -1023,7 +1030,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/planu30") {
+  if (cmd === "/planu30" || cmd === "/開通不限30") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -1036,7 +1043,7 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/planu90") {
+  if (cmd === "/planu90" || cmd === "/開通不限90") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
@@ -1049,14 +1056,14 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/setadmin") {
+  if (cmd === "/setadmin" || cmd === "/新增管理員") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
     if (!arg) {
-      await replyText(event.replyToken, "用法：/setadmin 使用者ID");
+      await replyText(event.replyToken, "用法：/新增管理員 使用者ID");
       return true;
     }
 
@@ -1067,14 +1074,14 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/deladmin") {
+  if (cmd === "/deladmin" || cmd === "/刪除管理員") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
     if (!arg) {
-      await replyText(event.replyToken, "用法：/deladmin 使用者ID");
+      await replyText(event.replyToken, "用法：/刪除管理員 使用者ID");
       return true;
     }
 
@@ -1090,14 +1097,14 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/setowner") {
+  if (cmd === "/setowner" || cmd === "/設定擁有者") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
     if (!arg) {
-      await replyText(event.replyToken, "用法：/setowner 使用者ID");
+      await replyText(event.replyToken, "用法：/設定擁有者 使用者ID");
       return true;
     }
 
