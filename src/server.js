@@ -6,26 +6,6 @@ import pg from "pg";
 
 dotenv.config();
 
-process.on("uncaughtException", (err) => {
-  console.error("uncaughtException =", err);
-  if (err?.stack) console.error(err.stack);
-  process.exit(1);
-});
-
-process.on("unhandledRejection", (reason) => {
-  console.error("unhandledRejection =", reason);
-  if (reason?.stack) console.error(reason.stack);
-  process.exit(1);
-});
-
-console.log("=== boot start ===");
-console.log("LINE_CHANNEL_ACCESS_TOKEN =", !!process.env.LINE_CHANNEL_ACCESS_TOKEN);
-console.log("LINE_CHANNEL_SECRET =", !!process.env.LINE_CHANNEL_SECRET);
-console.log("OPENAI_API_KEY =", !!process.env.OPENAI_API_KEY);
-console.log("DATABASE_URL =", !!process.env.DATABASE_URL);
-console.log("OPENAI_MODEL =", process.env.OPENAI_MODEL);
-console.log("PORT =", process.env.PORT);
-
 const { Pool } = pg;
 
 const {
@@ -36,6 +16,13 @@ const {
   DATABASE_URL,
   PORT = 3000,
 } = process.env;
+
+const CONTACT_LINE_ID = "aszx88188";
+
+const SUPER_ADMINS = [
+  "U96da7afef783339acc1959c20b445f9c",
+  "Uceba5819446e95c6cb0f12f8e27157aa",
+];
 
 const missingVars = [];
 if (!LINE_CHANNEL_ACCESS_TOKEN) missingVars.push("LINE_CHANNEL_ACCESS_TOKEN");
@@ -48,12 +35,13 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 
-const CONTACT_LINE_ID = "aszx88188";
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException =", err);
+});
 
-const SUPER_ADMINS = [
-  "U96da7afef783339acc1959c20b445f9c",
-  "Uceba5819446e95c6cb0f12f8e27157aa",
-];
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection =", reason);
+});
 
 const app = express();
 
@@ -732,8 +720,6 @@ async function pushLanguageMenu(to) {
 }
 
 async function initDb() {
-  console.log("initDb start");
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS plans (
       user_id TEXT PRIMARY KEY,
@@ -775,8 +761,6 @@ async function initDb() {
       UNIQUE(user_id, group_id, date)
     );
   `);
-
-  console.log("initDb done");
 }
 
 async function getGroup(chatId) {
@@ -1526,8 +1510,6 @@ async function handleCommand(event, rawText) {
 }
 
 async function handleTextMessage(event) {
-  const startedAt = Date.now();
-
   const text = (event.message?.text || "").trim();
   if (!text) return;
 
@@ -1573,7 +1555,7 @@ async function handleTextMessage(event) {
         "本群翻譯方案已到期",
         "目前無法使用語言設定與自動翻譯",
         "",
-        `如需續費開通`,
+        "如需續費開通",
         `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
       ].join("\n")
     );
@@ -1600,7 +1582,7 @@ async function handleTextMessage(event) {
           "你目前為免費試用方案",
           `今日免費 ${actingPlan.daily_limit} 句已用完`,
           "",
-          `如需升級或開通 7 天試用`,
+          "如需升級或開通 7 天試用",
           `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
         ].join("\n")
       );
@@ -1620,7 +1602,6 @@ async function handleTextMessage(event) {
           return `[${lang}] ${translated}`;
         } catch (err) {
           console.error(`translate ${lang} error:`, err);
-          if (err?.stack) console.error(err.stack);
           return null;
         }
       })
@@ -1633,7 +1614,6 @@ async function handleTextMessage(event) {
       return;
     }
 
-    console.log("handleTextMessage user ms =", Date.now() - startedAt);
     await replyText(event.replyToken, outputs.join("\n"));
     return;
   }
@@ -1661,7 +1641,6 @@ async function handleTextMessage(event) {
         return `[${lang}] ${translated}`;
       } catch (err) {
         console.error(`translate ${lang} error:`, err);
-        if (err?.stack) console.error(err.stack);
         return null;
       }
     })
@@ -1674,7 +1653,6 @@ async function handleTextMessage(event) {
     return;
   }
 
-  console.log("handleTextMessage group ms =", Date.now() - startedAt);
   await replyText(event.replyToken, outputs.join("\n"));
 }
 
@@ -1700,7 +1678,6 @@ async function handleEvent(event) {
     }
   } catch (err) {
     console.error("handleEvent error =", err);
-    if (err?.stack) console.error(err.stack);
 
     if (event?.replyToken) {
       try {
@@ -1724,7 +1701,6 @@ app.get("/health", async (_req, res) => {
       time: result.rows?.[0]?.now || null,
     });
   } catch (err) {
-    console.error("/health error =", err);
     res.status(500).json({
       ok: false,
       error: String(err?.message || err),
@@ -1737,38 +1713,21 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
   try {
     const events = req.body.events || [];
-    console.log("webhook events =", events.length);
-
     for (const event of events) {
       await handleEvent(event);
     }
   } catch (err) {
     console.error("Webhook error:", err);
-    if (err?.stack) console.error(err.stack);
   }
 });
 
 initDb()
-  .then(async () => {
-    console.log("DB init success");
-
-    try {
-      const nowResult = await pool.query("SELECT NOW()");
-      console.log("DB connection test success =", nowResult.rows[0]);
-    } catch (dbTestErr) {
-      console.error("DB connection test failed =", dbTestErr);
-      if (dbTestErr?.stack) console.error(dbTestErr.stack);
-      process.exit(1);
-    }
-
+  .then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error("DB init error full =", err);
-    if (err?.stack) {
-      console.error(err.stack);
-    }
+    console.error("DB init error =", err);
     process.exit(1);
   });
