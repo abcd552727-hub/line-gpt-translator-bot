@@ -196,7 +196,7 @@ function looksLikeThaiFamilyText(text = "") {
 }
 
 function cleanupTranslation(text = "") {
-  return text
+  return String(text || "")
     .replace(/^\s*翻譯[:：]\s*/i, "")
     .replace(/^\s*translation[:：]\s*/i, "")
     .replace(/\[.*?\]/g, "")
@@ -223,6 +223,26 @@ function looksLikeThaiShortChat(text = "") {
       t
     )
   );
+}
+
+function normalizeLangList(langs = []) {
+  const seen = new Set();
+  const result = [];
+
+  for (const lang of langs) {
+    if (!LANG_LABELS[lang]) continue;
+    if (seen.has(lang)) continue;
+    seen.add(lang);
+    result.push(lang);
+  }
+
+  return result;
+}
+
+function safeTranslatedLine(lang, translated) {
+  const clean = cleanupTranslation(translated);
+  if (!clean) return null;
+  return `[${lang}] ${clean}`;
 }
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
@@ -789,6 +809,9 @@ async function ensureGroupDb(chatId) {
 }
 
 async function saveGroup(group) {
+  group.langs = normalizeLangList(group.langs || []);
+  group.admins = Array.isArray(group.admins) ? [...new Set(group.admins.filter(Boolean))] : [];
+
   await pool.query(
     `
     INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins)
@@ -850,7 +873,7 @@ async function savePlan(plan) {
       plan.plan_type,
       plan.group_limit,
       plan.vip_expires_at,
-      JSON.stringify(plan.bound_groups || []),
+      JSON.stringify(Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []),
       plan.daily_limit ?? null,
       plan.trial_type ?? null,
     ]
@@ -903,13 +926,14 @@ function canLanguageManage(group, plan, userId) {
 
 function addAdmin(group, userId) {
   if (!userId) return;
+  if (!Array.isArray(group.admins)) group.admins = [];
   if (!group.admins.includes(userId)) {
     group.admins.push(userId);
   }
 }
 
 function removeAdmin(group, userId) {
-  group.admins = group.admins.filter((id) => id !== userId);
+  group.admins = (group.admins || []).filter((id) => id !== userId);
 }
 
 function bindGroupToOwner(plan, groupId) {
@@ -1064,6 +1088,7 @@ async function handlePostback(event) {
     if (!group.langs.includes(lang)) {
       group.langs.push(lang);
     }
+    group.langs = normalizeLangList(group.langs);
     await saveGroup(group);
     await replyText(
       event.replyToken,
@@ -1073,7 +1098,7 @@ async function handlePostback(event) {
   }
 
   if (action === "remove_lang") {
-    group.langs = group.langs.filter((l) => l !== lang);
+    group.langs = normalizeLangList(group.langs).filter((l) => l !== lang);
     await saveGroup(group);
     await replyText(
       event.replyToken,
@@ -1452,6 +1477,27 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
+  if (cmd === "/開通不限30") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/開通不限30 使用者ID");
+      return true;
+    }
+
+    const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
   if (cmd === "/試用7天") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
@@ -1557,7 +1603,7 @@ async function handleTextMessage(event) {
         "本群翻譯方案已到期",
         "目前無法使用語言設定與自動翻譯",
         "",
-        `如需續費開通`,
+        "如需續費開通",
         `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
       ].join("\n")
     );
@@ -1584,7 +1630,7 @@ async function handleTextMessage(event) {
           "你目前為免費試用方案",
           `今日免費 ${actingPlan.daily_limit} 句已用完`,
           "",
-          `如需升級或開通 7 天試用`,
+          "如需升級或開通 7 天試用",
           `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
         ].join("\n")
       );
@@ -1601,7 +1647,7 @@ async function handleTextMessage(event) {
       targetLangs.map(async (lang) => {
         try {
           const translated = await translateToTarget(text, lang);
-          return `[${lang}] ${translated}`;
+          return safeTranslatedLine(lang, translated);
         } catch (err) {
           console.error(`translate ${lang} error:`, err);
           return null;
@@ -1620,7 +1666,7 @@ async function handleTextMessage(event) {
     return;
   }
 
-  const targetLangs = group.langs || [];
+  const targetLangs = normalizeLangList(group.langs || []);
   if (!targetLangs.length) {
     await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
     return;
@@ -1632,7 +1678,6 @@ async function handleTextMessage(event) {
     .slice(0, 3);
 
   if (!langsToTranslate.length) {
-    await replyText(event.replyToken, "目前沒有需要翻譯的新語言。");
     return;
   }
 
@@ -1640,7 +1685,7 @@ async function handleTextMessage(event) {
     langsToTranslate.map(async (lang) => {
       try {
         const translated = await translateToTarget(text, lang);
-        return `[${lang}] ${translated}`;
+        return safeTranslatedLine(lang, translated);
       } catch (err) {
         console.error(`translate ${lang} error:`, err);
         return null;
@@ -1680,6 +1725,8 @@ async function handleEvent(event) {
     }
   } catch (err) {
     console.error("handleEvent error =", err);
+    if (err?.stack) console.error(err.stack);
+
     if (event?.replyToken) {
       try {
         await replyText(event.replyToken, "系統處理失敗，請稍後再試。");
