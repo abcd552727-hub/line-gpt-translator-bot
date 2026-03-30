@@ -6,6 +6,16 @@ import pg from "pg";
 
 dotenv.config();
 
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException =", err);
+  if (err?.stack) console.error(err.stack);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection =", reason);
+  if (reason?.stack) console.error(reason.stack);
+});
+
 const { Pool } = pg;
 
 const {
@@ -16,13 +26,6 @@ const {
   DATABASE_URL,
   PORT = 3000,
 } = process.env;
-
-const CONTACT_LINE_ID = "aszx88188";
-
-const SUPER_ADMINS = [
-  "U96da7afef783339acc1959c20b445f9c",
-  "Uceba5819446e95c6cb0f12f8e27157aa",
-];
 
 const missingVars = [];
 if (!LINE_CHANNEL_ACCESS_TOKEN) missingVars.push("LINE_CHANNEL_ACCESS_TOKEN");
@@ -35,13 +38,12 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 
-process.on("uncaughtException", (err) => {
-  console.error("uncaughtException =", err);
-});
+const CONTACT_LINE_ID = "aszx88188";
 
-process.on("unhandledRejection", (reason) => {
-  console.error("unhandledRejection =", reason);
-});
+const SUPER_ADMINS = [
+  "U96da7afef783339acc1959c20b445f9c",
+  "Uceba5819446e95c6cb0f12f8e27157aa",
+];
 
 const app = express();
 
@@ -1555,7 +1557,7 @@ async function handleTextMessage(event) {
         "本群翻譯方案已到期",
         "目前無法使用語言設定與自動翻譯",
         "",
-        "如需續費開通",
+        `如需續費開通`,
         `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
       ].join("\n")
     );
@@ -1582,7 +1584,7 @@ async function handleTextMessage(event) {
           "你目前為免費試用方案",
           `今日免費 ${actingPlan.daily_limit} 句已用完`,
           "",
-          "如需升級或開通 7 天試用",
+          `如需升級或開通 7 天試用`,
           `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
         ].join("\n")
       );
@@ -1678,7 +1680,6 @@ async function handleEvent(event) {
     }
   } catch (err) {
     console.error("handleEvent error =", err);
-
     if (event?.replyToken) {
       try {
         await replyText(event.replyToken, "系統處理失敗，請稍後再試。");
@@ -1701,6 +1702,7 @@ app.get("/health", async (_req, res) => {
       time: result.rows?.[0]?.now || null,
     });
   } catch (err) {
+    console.error("/health error =", err);
     res.status(500).json({
       ok: false,
       error: String(err?.message || err),
@@ -1718,16 +1720,25 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
     }
   } catch (err) {
     console.error("Webhook error:", err);
+    if (err?.stack) console.error(err.stack);
   }
 });
 
 initDb()
-  .then(() => {
+  .then(async () => {
+    try {
+      await pool.query("SELECT NOW()");
+    } catch (dbTestErr) {
+      console.error("DB connection test failed =", dbTestErr);
+      process.exit(1);
+    }
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error("DB init error =", err);
+    console.error("DB init error full =", err);
+    if (err?.stack) console.error(err.stack);
     process.exit(1);
   });
