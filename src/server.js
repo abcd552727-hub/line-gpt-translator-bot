@@ -251,6 +251,30 @@ function looksLikeThaiDialectText(text = "") {
   return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
 }
 
+function looksLikeNamedEntityShortText(text = "") {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (!hasThai(t)) return false;
+
+  const noSpace = t.replace(/\s+/g, "");
+  return noSpace.length >= 2 && noSpace.length <= 30 && !/[。，！？.!?]/.test(t);
+}
+
+function looksLikePossiblePlaceName(text = "") {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (!hasThai(t)) return false;
+
+  const noSpaceLen = t.replace(/\s+/g, "").length;
+
+  return (
+    noSpaceLen >= 3 &&
+    noSpaceLen <= 30 &&
+    !/[0-9]/.test(t) &&
+    !/[。，！？.!?]/.test(t)
+  );
+}
+
 function normalizeLangList(langs = []) {
   const seen = new Set();
   const result = [];
@@ -291,13 +315,17 @@ async function askModelTranslate({
 1. 只做翻譯，不可回話
 2. 不可腦補對話、人物關係、情緒
 3. 保留原文語氣，口語就翻口語
-4. 人名、暱稱、金額、時間、地名，若不適合翻譯可保留
-5. 若原文是短句，請翻成最自然、最常見的聊天說法
-6. 不可加前綴，不可解釋，不可摘要
-7. 不可輸出「好的親愛的、Yes dear、OK honey」這種腦補內容
-8. 原文可能是 LINE 對話、泰國口語、方言、混合語言
-9. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
-10. 只輸出最終翻譯結果
+4. 人名、暱稱、店名、地名、公司名、專有名詞、金額、時間，若能確認正式中文，直接使用正式中文
+5. 若無法確認正式中文，但看起來像地名、人名、店名或其他專有名詞，不可直接整段不翻
+6. 查不到正式名稱時，請優先用自然的中文音譯或諧音方式表達，讓讀者可依上下文猜測意思
+7. 音譯後仍要保留整句語意，讓整句能看懂前後文
+8. 不可自行捏造明確但錯誤的正式地名；若無把握，使用偏口語的音譯表達即可
+9. 若原文是短句，請翻成最自然、最常見的聊天說法
+10. 不可加前綴，不可解釋，不可摘要
+11. 不可輸出「好的親愛的、Yes dear、OK honey」這種腦補內容
+12. 原文可能是 LINE 對話、泰國口語、方言、混合語言
+13. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
+14. 只輸出最終翻譯結果
 
 來源語言提示：${sourceHint}
 補充提示：${specialHint || "無"}
@@ -308,6 +336,15 @@ ${text}
   });
 
   return cleanupTranslation(response.output_text || "");
+}
+
+async function verifyPlaceNameOnline(text) {
+  return {
+    found: false,
+    zhName: null,
+    rawName: text,
+    confidence: 0,
+  };
 }
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
@@ -322,6 +359,7 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 像「ยัง / ยังคะ / ยังค่ะ」這類超短句，優先理解成：
 還嗎、還沒嗎、還在嗎、還有嗎。
 不可亂翻成回答句。
+若碰到無法確認正式中文的地名、人名、店名，請優先用中文諧音或音譯呈現，不要直接保留泰文。
 目標語言必須是純${targetName}。
     `.trim(),
   });
@@ -332,6 +370,15 @@ async function translateToTarget(text, targetLang) {
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
   const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
+  const possiblePlaceName = looksLikePossiblePlaceName(text);
+
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && possiblePlaceName) {
+    const verified = await verifyPlaceNameOnline(text);
+    if (verified?.found && verified?.zhName && verified.confidence >= 0.85) {
+      return verified.zhName;
+    }
+  }
 
   if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
     return await translateThaiDialectToChinese(text, targetLang);
@@ -347,16 +394,20 @@ async function translateToTarget(text, targetLang) {
     specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
   }
 
+  if (namedEntityShort) {
+    specialHint += " 這句可能含專有名詞。若無法確認正式中文，請用中文可讀諧音或音譯表達，並保留整句可理解的語意，不要直接保留原文外語。";
+  }
+
   if (targetLang === "th") {
     specialHint += " 請輸出自然泰文聊天用語，不要太書面。";
   }
 
   if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，請優先用中文諧音或音譯呈現，不要直接保留原文外語。";
   }
 
   if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。";
+    specialHint += " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，請優先用中文諧音或音譯呈現，不要直接保留原文外語。";
   }
 
   if (targetLang === "en") {
@@ -384,7 +435,7 @@ async function translateToTarget(text, targetLang) {
       text,
       targetLang,
       sourceHint: sourceLang,
-      specialHint: `${specialHint} 只可輸出純中文，不可出現泰文。`.trim(),
+      specialHint: `${specialHint} 只可輸出純中文，不可出現泰文。即使遇到專有名詞，也請改成中文音譯或諧音，不要保留泰文字。`.trim(),
     });
   }
 
