@@ -40,6 +40,11 @@ if (missingVars.length > 0) {
 
 const CONTACT_LINE_ID = "aszx88188";
 
+const FIXED_TERM_MAP = {
+  "เหิงซุน": "เหิงซุน",
+  "เฮงชุน": "恆春",
+};
+
 const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
   "Uceba5819446e95c6cb0f12f8e27157aa",
@@ -264,15 +269,39 @@ function looksLikePossiblePlaceName(text = "") {
   const t = String(text || "").trim();
   if (!t) return false;
   if (!hasThai(t)) return false;
+  if (t.includes(" ")) return false;
 
   const noSpaceLen = t.replace(/\s+/g, "").length;
 
   return (
-    noSpaceLen >= 3 &&
-    noSpaceLen <= 30 &&
+    noSpaceLen >= 4 &&
+    noSpaceLen <= 20 &&
     !/[0-9]/.test(t) &&
     !/[。，！？.!?]/.test(t)
   );
+}
+
+function getMatchedFixedTerms(text = "") {
+  const matched = [];
+
+  for (const [src, target] of Object.entries(FIXED_TERM_MAP)) {
+    if (String(text || "").includes(src)) {
+      matched.push({ src, target });
+    }
+  }
+
+  return matched;
+}
+
+function buildFixedTermsHint(text = "") {
+  const matched = getMatchedFixedTerms(text);
+  if (!matched.length) return "";
+
+  return [
+    "【固定術語表】",
+    ...matched.map((item) => `${item.src} => ${item.target}`),
+    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。"
+  ].join("\n");
 }
 
 function normalizeLangList(langs = []) {
@@ -302,9 +331,11 @@ async function askModelTranslate({
   specialHint = "",
 }) {
   const targetName = getLangPureName(targetLang);
+  const fixedTermsHint = buildFixedTermsHint(text);
 
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
+    temperature: 0.2,
     input: `
 你是專業翻譯機器人，只能翻譯，不可聊天。
 
@@ -326,9 +357,12 @@ async function askModelTranslate({
 12. 原文可能是 LINE 對話、泰國口語、方言、混合語言
 13. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
 14. 只輸出最終翻譯結果
+15. 若固定術語表有指定詞語，必須優先使用，不可改寫
 
 來源語言提示：${sourceHint}
 補充提示：${specialHint || "無"}
+
+${fixedTermsHint || ""}
 
 內容：
 ${text}
@@ -349,6 +383,8 @@ async function verifyPlaceNameOnline(text) {
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
   const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
+  const fixedTerms = getMatchedFixedTerms(text);
+  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
 
   return await askModelTranslate({
     text,
@@ -359,8 +395,10 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 像「ยัง / ยังคะ / ยังค่ะ」這類超短句，優先理解成：
 還嗎、還沒嗎、還在嗎、還有嗎。
 不可亂翻成回答句。
-若碰到無法確認正式中文的地名、人名、店名，請優先用中文諧音或音譯呈現，不要直接保留泰文。
-目標語言必須是純${targetName}。
+若碰到無法確認正式中文的地名、人名、店名：
+- 若固定術語表已指定，必須照固定術語表
+- 若未指定，才可用中文諧音或音譯呈現
+${allowOriginalTerm ? "若固定術語表指定保留原詞，可保留該原詞。" : `目標語言必須是純${targetName}。`}
     `.trim(),
   });
 }
@@ -372,6 +410,7 @@ async function translateToTarget(text, targetLang) {
   const mixedZhTh = isMixedChineseThai(text);
   const namedEntityShort = looksLikeNamedEntityShortText(text);
   const possiblePlaceName = looksLikePossiblePlaceName(text);
+  const fixedTerms = getMatchedFixedTerms(text);
 
   if ((targetLang === "zh-TW" || targetLang === "zh-CN") && possiblePlaceName) {
     const verified = await verifyPlaceNameOnline(text);
@@ -386,8 +425,12 @@ async function translateToTarget(text, targetLang) {
 
   let specialHint = "";
 
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
   if (thaiShortChat) {
-    specialHint += "這是泰文超短聊天句，請翻成自然聊天語氣，不可腦補成回答句。";
+    specialHint += " 這是泰文超短聊天句，請翻成自然聊天語氣，不可腦補成回答句。";
   }
 
   if (mixedZhTh) {
@@ -395,7 +438,7 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (namedEntityShort) {
-    specialHint += " 這句可能含專有名詞。若無法確認正式中文，請用中文可讀諧音或音譯表達，並保留整句可理解的語意，不要直接保留原文外語。";
+    specialHint += " 這句可能含專有名詞。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
   }
 
   if (targetLang === "th") {
@@ -403,11 +446,11 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，請優先用中文諧音或音譯呈現，不要直接保留原文外語。";
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，請優先用中文諧音或音譯呈現，不要直接保留原文外語。";
+    specialHint += " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "en") {
@@ -431,12 +474,16 @@ async function translateToTarget(text, targetLang) {
   }
 
   if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(output)) {
-    output = await askModelTranslate({
-      text,
-      targetLang,
-      sourceHint: sourceLang,
-      specialHint: `${specialHint} 只可輸出純中文，不可出現泰文。即使遇到專有名詞，也請改成中文音譯或諧音，不要保留泰文字。`.trim(),
-    });
+    const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
+
+    if (!allowOriginalTerm) {
+      output = await askModelTranslate({
+        text,
+        targetLang,
+        sourceHint: sourceLang,
+        specialHint: `${specialHint} 只可輸出純中文，不可出現泰文；但若固定術語表指定保留原詞，則可保留該原詞。`.trim(),
+      });
+    }
   }
 
   if (targetLang === "en" && /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) && !/[A-Za-z]/.test(output)) {
