@@ -146,18 +146,39 @@ function canUseGroup(plan, groupId) {
   return false;
 }
 
-function detectSourceLangSimple(text) {
-  if (/[\u0E00-\u0E7F]/.test(text)) return "th";
-  if (/[\u1000-\u109F]/.test(text)) return "my";
-  if (/[\u3040-\u30FF\u31F0-\u31FF]/.test(text)) return "ja";
-  if (/[\uAC00-\uD7AF]/.test(text)) return "ko";
-  if (/[\u0600-\u06FF]/.test(text)) return "ar";
-  if (/[\u0900-\u097F]/.test(text)) return "hi";
-  if (/[\u1780-\u17FF]/.test(text)) return "km";
-  if (/[\u0E80-\u0EFF]/.test(text)) return "lo";
-  if (/[\u4E00-\u9FFF]/.test(text)) return "zh-TW";
-  if (/[A-Za-z]/.test(text)) return "en";
-  return "auto";
+function detectSourceLangSimple(text = "") {
+  const t = String(text || "").trim();
+
+  if (!t) return "auto";
+
+  const thaiCount = (t.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const chineseCount = (t.match(/[\u4E00-\u9FFF]/g) || []).length;
+  const latinCount = (t.match(/[A-Za-z]/g) || []).length;
+  const myCount = (t.match(/[\u1000-\u109F]/g) || []).length;
+  const jaCount = (t.match(/[\u3040-\u30FF\u31F0-\u31FF]/g) || []).length;
+  const koCount = (t.match(/[\uAC00-\uD7AF]/g) || []).length;
+  const arCount = (t.match(/[\u0600-\u06FF]/g) || []).length;
+  const hiCount = (t.match(/[\u0900-\u097F]/g) || []).length;
+  const kmCount = (t.match(/[\u1780-\u17FF]/g) || []).length;
+  const loCount = (t.match(/[\u0E80-\u0EFF]/g) || []).length;
+
+  const counts = [
+    ["th", thaiCount],
+    ["zh-TW", chineseCount],
+    ["en", latinCount],
+    ["my", myCount],
+    ["ja", jaCount],
+    ["ko", koCount],
+    ["ar", arCount],
+    ["hi", hiCount],
+    ["km", kmCount],
+    ["lo", loCount],
+  ].sort((a, b) => b[1] - a[1]);
+
+  const [topLang, topCount] = counts[0];
+  if (!topCount || topCount <= 0) return "auto";
+
+  return topLang;
 }
 
 function getLangPureName(lang) {
@@ -184,45 +205,50 @@ function getLangPureName(lang) {
 }
 
 function hasChinese(text = "") {
-  return /[\u4E00-\u9FFF]/.test(text);
+  return /[\u4E00-\u9FFF]/.test(String(text || ""));
 }
 
 function hasThai(text = "") {
-  return /[\u0E00-\u0E7F]/.test(text);
+  return /[\u0E00-\u0E7F]/.test(String(text || ""));
 }
 
-function looksLikeThaiFamilyText(text = "") {
-  return /[\u0E00-\u0E7F]/.test(text);
+function isMixedChineseThai(text = "") {
+  return hasChinese(text) && hasThai(text);
 }
 
 function cleanupTranslation(text = "") {
   return String(text || "")
     .replace(/^\s*翻譯[:：]\s*/i, "")
     .replace(/^\s*translation[:：]\s*/i, "")
-    .replace(/\[.*?\]/g, "")
-    .replace(/【.*?】/g, "")
     .replace(/^["「『]+|["」』]+$/g, "")
     .trim();
 }
 
 function isVeryShortText(text = "") {
-  const cleaned = text.trim();
-  if (!cleaned) return false;
-  const noSpace = cleaned.replace(/\s+/g, "");
-  return noSpace.length <= 12;
+  const cleaned = String(text || "").trim().replace(/\s+/g, "");
+  return cleaned.length > 0 && cleaned.length <= 14;
 }
 
 function looksLikeThaiShortChat(text = "") {
   if (!hasThai(text)) return false;
 
-  const t = text.trim().toLowerCase();
+  const t = String(text || "").trim().toLowerCase();
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม)$/.test(
       t
     )
   );
+}
+
+function looksLikeThaiDialectText(text = "") {
+  const t = String(text || "").trim();
+  if (!hasThai(t)) return false;
+
+  if (isVeryShortText(t)) return true;
+
+  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
 }
 
 function normalizeLangList(langs = []) {
@@ -245,191 +271,133 @@ function safeTranslatedLine(lang, translated) {
   return `[${lang}] ${clean}`;
 }
 
-async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
-  const chineseName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
+async function askModelTranslate({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  specialHint = "",
+}) {
+  const targetName = getLangPureName(targetLang);
 
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     input: `
-你是翻譯機器人，不是聊天機器人。
+你是專業翻譯機器人，只能翻譯，不可聊天。
 
 任務：
-把使用者輸入的內容，從泰語或泰國各地區常見說法，翻譯成自然的${chineseName}。
+把以下內容翻譯成「${targetName}」。
 
-你必須先在內部理解這段內容比較接近：
-- 標準泰語
-- 北部說法
-- 東北 Isan 說法
-- 南部說法
-- 混合說法
-但不要把判斷結果顯示出來。
+翻譯規則：
+1. 只做翻譯，不可回話
+2. 不可腦補對話、人物關係、情緒
+3. 保留原文語氣，口語就翻口語
+4. 人名、暱稱、金額、時間、地名，若不適合翻譯可保留
+5. 若原文是短句，請翻成最自然、最常見的聊天說法
+6. 不可加前綴，不可解釋，不可摘要
+7. 不可輸出「好的親愛的、Yes dear、OK honey」這種腦補內容
+8. 原文可能是 LINE 對話、泰國口語、方言、混合語言
+9. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
+10. 只輸出最終翻譯結果
 
-嚴格規則：
-1. 你只能做翻譯，不可回話
-2. 不可把原文當成對你說話
-3. 不可自行補成完整對話
-4. 不可添加原文沒有的情緒、稱呼、人物關係
-5. 不可輸出像「好的親愛的、Yes dear、OK honey」這類腦補內容
-6. 如果原文是超短聊天句，請依最常見聊天語境翻成自然口語
-7. 像「ยัง」「ยังคะ」「ยังค่ะ」這類短句，優先理解為「還、還沒、還在、還有嗎」這類語意，不可亂翻成回答句
-8. 只輸出${chineseName}
-9. 不可輸出泰文原文
-10. 不可解釋
-11. 不可標註方言類型
-12. 只輸出最終翻譯結果
+來源語言提示：${sourceHint}
+補充提示：${specialHint || "無"}
 
 內容：
 ${text}
     `.trim(),
   });
 
-  let output = cleanupTranslation(response.output_text || "");
+  return cleanupTranslation(response.output_text || "");
+}
 
-  if (hasThai(output)) {
-    const retry = await openai.responses.create({
-      model: OPENAI_MODEL,
-      input: `
-你上一版翻譯不合格，因為結果裡還有泰文。
+async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
+  const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
 
-現在請重新把下面內容翻成${chineseName}。
-
-規則：
-1. 只能輸出${chineseName}
-2. 不可出現任何泰文
-3. 不可回話
-4. 不可腦補對話
-5. 像「ยังคะ」優先翻成「還在嗎／還沒嗎／還有嗎」這類自然聊天句
-6. 不可解釋
-7. 只輸出翻譯結果
-
-內容：
-${text}
-      `.trim(),
-    });
-
-    output = cleanupTranslation(retry.output_text || output);
-  }
-
-  return output;
+  return await askModelTranslate({
+    text,
+    targetLang,
+    sourceHint: "泰文或泰國方言",
+    specialHint: `
+這段可能含泰國各地口語或方言。
+像「ยัง / ยังคะ / ยังค่ะ」這類超短句，優先理解成：
+還嗎、還沒嗎、還在嗎、還有嗎。
+不可亂翻成回答句。
+目標語言必須是純${targetName}。
+    `.trim(),
+  });
 }
 
 async function translateToTarget(text, targetLang) {
-  const targetName = getLangPureName(targetLang);
+  const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
+  const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && looksLikeThaiFamilyText(text)) {
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
     return await translateThaiDialectToChinese(text, targetLang);
   }
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    input: `
-你是翻譯機器人，不是聊天機器人。
+  let specialHint = "";
 
-任務：
-把使用者提供的內容，完整翻譯成「${targetName}」。
+  if (thaiShortChat) {
+    specialHint += "這是泰文超短聊天句，請翻成自然聊天語氣，不可腦補成回答句。";
+  }
 
-嚴格規則：
-1. 你只能翻譯，不可回覆使用者
-2. 不可把原文當成在跟你對話
-3. 不可自行補成完整對話
-4. 不可添加原文沒有的情緒、稱呼、人物關係
-5. 不可輸出像 Yes, dear? / OK honey / 好的寶貝 這類腦補內容
-6. 保留原本語氣，翻譯要自然口語
-7. 若原文是超短聊天句，請依最常見聊天語境翻譯，不可自由創作
-8. ${
-      thaiShortChat
-        ? `這句屬於泰文超短聊天句，像「ยัง」「ยังคะ」「ยังค่ะ」應優先理解成「還、還沒、還在、還有嗎」這類意思，不可翻成回答句。`
-        : `如果原文很短，也仍然只能忠實翻譯，不可亂補內容。`
-    }
-9. 只能輸出 ${targetName}
-10. 不可夾雜原文
-11. 不可保留其他語言詞
-12. 不可解釋、不可補充、不可摘要
-13. 不要加引號
-14. 不要加「翻譯：」這類前綴
-15. 只輸出最終翻譯結果
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
 
-要翻譯的內容：
-${text}
-    `.trim(),
+  if (targetLang === "th") {
+    specialHint += " 請輸出自然泰文聊天用語，不要太書面。";
+  }
+
+  if (targetLang === "zh-TW") {
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+  }
+
+  if (targetLang === "zh-CN") {
+    specialHint += " 請輸出自然简体中文。";
+  }
+
+  if (targetLang === "en") {
+    specialHint += " 請輸出自然英文聊天語氣。";
+  }
+
+  let output = await askModelTranslate({
+    text,
+    targetLang,
+    sourceHint: sourceLang,
+    specialHint: specialHint.trim(),
   });
 
-  let output = cleanupTranslation(response.output_text || "");
-
   if (targetLang === "th" && hasChinese(output)) {
-    const retry = await openai.responses.create({
-      model: OPENAI_MODEL,
-      input: `
-你上一版翻譯不合格，因為結果裡還有中文。
-
-現在請重新把下面內容完整翻譯成泰文。
-
-嚴格規則：
-1. 只能輸出純泰文
-2. 不可出現任何中文
-3. 不可出現英文原文
-4. 不可回話
-5. 不可腦補對話
-6. 只輸出翻譯結果
-
-內容：
-${text}
-      `.trim(),
+    output = await askModelTranslate({
+      text,
+      targetLang,
+      sourceHint: sourceLang,
+      specialHint: `${specialHint} 只可輸出純泰文，不可出現中文。`.trim(),
     });
-
-    output = cleanupTranslation(retry.output_text || output);
   }
 
   if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(output)) {
-    const retry = await openai.responses.create({
-      model: OPENAI_MODEL,
-      input: `
-你上一版翻譯不合格，因為結果裡還有泰文。
-
-現在請重新把下面內容完整翻譯成${targetName}。
-
-嚴格規則：
-1. 只能輸出${targetName}
-2. 不可出現泰文
-3. 不可出現其他原文
-4. 不可回話
-5. 不可腦補對話
-6. 只輸出翻譯結果
-
-內容：
-${text}
-      `.trim(),
+    output = await askModelTranslate({
+      text,
+      targetLang,
+      sourceHint: sourceLang,
+      specialHint: `${specialHint} 只可輸出純中文，不可出現泰文。`.trim(),
     });
-
-    output = cleanupTranslation(retry.output_text || output);
   }
 
   if (targetLang === "en" && /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) && !/[A-Za-z]/.test(output)) {
-    const retry = await openai.responses.create({
-      model: OPENAI_MODEL,
-      input: `
-你上一版翻譯不合格，因為結果不是純英文。
-
-現在請重新把下面內容完整翻譯成英文。
-
-嚴格規則：
-1. 只能輸出純英文
-2. 不可出現中文或泰文
-3. 不可回話
-4. 不可腦補對話
-5. 若原文是泰文短句，例如「ยังคะ」，應翻成自然英文，如 "Are you still there?" 或 "Not yet?"，不可翻成 "Yes, dear?"
-6. 只輸出翻譯結果
-
-內容：
-${text}
-      `.trim(),
+    output = await askModelTranslate({
+      text,
+      targetLang,
+      sourceHint: sourceLang,
+      specialHint: `${specialHint} 只可輸出純英文，不可出現中文或泰文。`.trim(),
     });
-
-    output = cleanupTranslation(retry.output_text || output);
   }
 
-  return output;
+  return cleanupTranslation(output);
 }
 
 function parsePostbackData(data) {
@@ -1640,8 +1608,18 @@ async function handleTextMessage(event) {
 
   if (chatType === "user") {
     const sourceLang = detectSourceLangSimple(text);
-    const defaultTargetLangs = ["zh-TW", "th"];
-    const targetLangs = defaultTargetLangs.filter((lang) => lang !== sourceLang);
+
+    let targetLangs = [];
+
+    if (sourceLang === "th") {
+      targetLangs = ["zh-TW"];
+    } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
+      targetLangs = ["th"];
+    } else if (sourceLang === "en") {
+      targetLangs = ["zh-TW", "th"];
+    } else {
+      targetLangs = ["zh-TW"];
+    }
 
     const results = await Promise.all(
       targetLangs.map(async (lang) => {
@@ -1675,7 +1653,7 @@ async function handleTextMessage(event) {
   const sourceLang = detectSourceLangSimple(text);
   const langsToTranslate = targetLangs
     .filter((lang) => lang !== sourceLang)
-    .slice(0, 3);
+    .slice(0, 2);
 
   if (!langsToTranslate.length) {
     return;
