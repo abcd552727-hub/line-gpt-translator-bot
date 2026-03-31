@@ -45,6 +45,21 @@ const FIXED_TERM_MAP = {
   "เฮงชุน": "恆春",
 };
 
+const CONTEXT_TYPO_MAP = [
+  {
+    wrong: "บอท",
+    intended: "บอส",
+    zh: "老闆",
+    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。"
+  },
+  {
+    wrong: "บอก",
+    intended: "บอส",
+    zh: "老闆",
+    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。"
+  }
+];
+
 const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
   "Uceba5819446e95c6cb0f12f8e27157aa",
@@ -304,6 +319,23 @@ function buildFixedTermsHint(text = "") {
   ].join("\n");
 }
 
+function getMatchedContextTypos(text = "") {
+  const t = String(text || "");
+  return CONTEXT_TYPO_MAP.filter(item => t.includes(item.wrong));
+}
+
+function buildContextTypoHint(text = "") {
+  const matched = getMatchedContextTypos(text);
+  if (!matched.length) return "";
+
+  return [
+    "【情境糾錯規則】",
+    ...matched.map(item => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`),
+    ...matched.map(item => item.hint),
+    "若上下文是在對真人說話，不可翻成機器人。"
+  ].join("\n");
+}
+
 function normalizeLangList(langs = []) {
   const seen = new Set();
   const result = [];
@@ -332,6 +364,7 @@ async function askModelTranslate({
 }) {
   const targetName = getLangPureName(targetLang);
   const fixedTermsHint = buildFixedTermsHint(text);
+  const contextTypoHint = buildContextTypoHint(text);
 
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
@@ -358,11 +391,14 @@ async function askModelTranslate({
 13. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
 14. 只輸出最終翻譯結果
 15. 若固定術語表有指定詞語，必須優先使用，不可改寫
+16. 若原文有常見誤拼、近音字、聊天誤打，必須優先依上下文修正後再翻譯
+17. 在真人聊天情境中，若「บอท / บอก」更可能是誤打的「บอส」，優先翻成「老闆」，不要翻成「機器人」
 
 來源語言提示：${sourceHint}
 補充提示：${specialHint || "無"}
 
 ${fixedTermsHint || ""}
+${contextTypoHint || ""}
 
 內容：
 ${text}
@@ -438,7 +474,7 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (namedEntityShort) {
-    specialHint += " 這句可能含專有名詞。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
+    specialHint += " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
   }
 
   if (targetLang === "th") {
