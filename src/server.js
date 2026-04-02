@@ -39,6 +39,7 @@ if (missingVars.length > 0) {
 }
 
 const CONTACT_LINE_ID = "aszx88188";
+const GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
 
 const FIXED_TERM_MAP = {
@@ -1024,6 +1025,58 @@ async function savePlan(plan) {
   );
 }
 
+function getNowTaipeiString() {
+  return new Date().toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour12: false,
+  });
+}
+
+async function syncMemberToGoogleSheet({
+  userId,
+  memberName = "",
+  lineDisplayName = "",
+  lineCustomId = "",
+  note = "",
+  openedAt = "",
+} = {}) {
+  try {
+    if (!GOOGLE_SHEETS_WEBHOOK_URL || !userId) return;
+
+    const plan = await getPlan(userId);
+    if (!plan) return;
+
+    const payload = {
+      userId,
+      memberName,
+      lineDisplayName,
+      lineCustomId,
+      planType: plan.plan_type || "",
+      trialType: plan.trial_type || "",
+      groupLimit:
+        plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
+          ? "不限"
+          : String(plan.group_limit ?? "1"),
+      boundGroupCount: Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0,
+      openedAt: openedAt || getNowTaipeiString(),
+      expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
+      vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
+      note,
+    };
+
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("syncMemberToGoogleSheet error =", err);
+    if (err?.stack) console.error(err.stack);
+  }
+}
+
 async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
   const safePage = parsePositiveInt(page, 1);
   const safePageSize = parsePositiveInt(pageSize, MEMBER_LIST_PAGE_SIZE);
@@ -1540,6 +1593,10 @@ async function handleCommand(event, rawText) {
       const oldPlan = await getPlan(arg);
       const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
       await savePlan(nextPlan);
+      await syncMemberToGoogleSheet({
+        userId: arg,
+        openedAt: getNowTaipeiString(),
+      });
 
       await replyText(
         event.replyToken,
@@ -1551,6 +1608,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(ownerId);
     const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: ownerId,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(event.replyToken, `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
     return true;
@@ -1570,6 +1631,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(ownerId);
     const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 90, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: ownerId,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(event.replyToken, `已開通 90 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
     return true;
@@ -1655,6 +1720,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1677,6 +1746,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = createPaidPlanObject(arg, "limited_groups", 3, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1699,6 +1772,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = createPaidPlanObject(arg, "limited_groups", 5, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1721,6 +1798,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1745,6 +1826,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = create1Group7DayTrialPlanObject(arg, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1785,6 +1870,9 @@ async function handleCommand(event, rawText) {
     const current = await getPlan(arg);
     const disabled = disablePlanObject(current, arg);
     await savePlan(disabled);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+    });
 
     await replyText(event.replyToken, `已停用方案：${arg}`);
     return true;
