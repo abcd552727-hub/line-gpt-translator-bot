@@ -922,3 +922,1075 @@ async function initDb() {
       user_id TEXT NOT NULL,
       group_id TEXT NOT NULL,
       date TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(user_id, group_id, date)
+    );
+  `);
+}
+
+async function getGroup(chatId) {
+  const result = await pool.query(
+    `SELECT chat_id, owner_id, langs, admins, created_at
+     FROM group_subscriptions
+     WHERE chat_id = $1`,
+    [chatId]
+  );
+  return result.rows[0] || null;
+}
+
+async function ensureGroupDb(chatId) {
+  await pool.query(
+    `
+    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins)
+    VALUES ($1, NULL, '[]'::jsonb, '[]'::jsonb)
+    ON CONFLICT (chat_id) DO NOTHING
+    `,
+    [chatId]
+  );
+
+  return getGroup(chatId);
+}
+
+async function saveGroup(group) {
+  group.langs = normalizeLangList(group.langs || []);
+  group.admins = Array.isArray(group.admins) ? [...new Set(group.admins.filter(Boolean))] : [];
+
+  await pool.query(
+    `
+    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins)
+    VALUES ($1, $2, $3::jsonb, $4::jsonb)
+    ON CONFLICT (chat_id)
+    DO UPDATE SET
+      owner_id = EXCLUDED.owner_id,
+      langs = EXCLUDED.langs,
+      admins = EXCLUDED.admins
+    `,
+    [
+      group.chat_id,
+      group.owner_id,
+      JSON.stringify(group.langs || []),
+      JSON.stringify(group.admins || []),
+    ]
+  );
+}
+
+async function getPlan(userId) {
+  const result = await pool.query(
+    `SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, created_at, daily_limit, trial_type
+     FROM plans
+     WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
+async function ensurePlanDb(userId) {
+  await pool.query(
+    `
+    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type)
+    VALUES ($1, NULL, NULL, NULL, '[]'::jsonb, NULL, NULL)
+    ON CONFLICT (user_id) DO NOTHING
+    `,
+    [userId]
+  );
+
+  return getPlan(userId);
+}
+
+async function savePlan(plan) {
+  await pool.query(
+    `
+    INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type)
+    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+    ON CONFLICT (user_id)
+    DO UPDATE SET
+      plan_type = EXCLUDED.plan_type,
+      group_limit = EXCLUDED.group_limit,
+      vip_expires_at = EXCLUDED.vip_expires_at,
+      bound_groups = EXCLUDED.bound_groups,
+      daily_limit = EXCLUDED.daily_limit,
+      trial_type = EXCLUDED.trial_type
+    `,
+    [
+      plan.user_id,
+      plan.plan_type,
+      plan.group_limit,
+      plan.vip_expires_at,
+      JSON.stringify(Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []),
+      plan.daily_limit ?? null,
+      plan.trial_type ?? null,
+    ]
+  );
+}
+
+async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
+  const safePage = parsePositiveInt(page, 1);
+  const safePageSize = parsePositiveInt(pageSize, MEMBER_LIST_PAGE_SIZE);
+  const offset = (safePage - 1) * safePageSize;
+
+  const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM plans`);
+  const total = countResult.rows?.[0]?.total || 0;
+
+  const result = await pool.query(
+    `
+    SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type, created_at
+    FROM plans
+    ORDER BY
+      CASE WHEN vip_expires_at IS NULL THEN 1 ELSE 0 END,
+      vip_expires_at DESC NULLS LAST,
+      created_at DESC,
+      user_id ASC
+    LIMIT $1 OFFSET $2
+    `,
+    [safePageSize, offset]
+  );
+
+  return {
+    rows: result.rows || [],
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+  };
+}
+
+async function checkDailyLimit(userId, groupId, dailyLimit) {
+  if (!dailyLimit) return { allowed: true, used: 0, limit: null };
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const result = await pool.query(
+    `SELECT count FROM usage_logs WHERE user_id = $1 AND group_id = $2 AND date = $3`,
+    [userId, groupId, today]
+  );
+
+  if (result.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO usage_logs (user_id, group_id, date, count)
+       VALUES ($1, $2, $3, 1)`,
+      [userId, groupId, today]
+    );
+    return { allowed: true, used: 1, limit: dailyLimit };
+  }
+
+  const currentCount = result.rows[0].count;
+
+  if (currentCount >= dailyLimit) {
+    return { allowed: false, used: currentCount, limit: dailyLimit };
+  }
+
+  await pool.query(
+    `UPDATE usage_logs
+     SET count = count + 1
+     WHERE user_id = $1 AND group_id = $2 AND date = $3`,
+    [userId, groupId, today]
+  );
+
+  return { allowed: true, used: currentCount + 1, limit: dailyLimit };
+}
+
+function isAdmin(group, userId) {
+  if (!userId) return false;
+  return (group?.admins || []).includes(userId);
+}
+
+function canLanguageManage(group, plan, userId) {
+  return isAdmin(group, userId) && isPlanActive(plan);
+}
+
+function addAdmin(group, userId) {
+  if (!userId) return;
+  if (!Array.isArray(group.admins)) group.admins = [];
+  if (!group.admins.includes(userId)) {
+    group.admins.push(userId);
+  }
+}
+
+function removeAdmin(group, userId) {
+  group.admins = (group.admins || []).filter((id) => id !== userId);
+}
+
+function bindGroupToOwner(plan, groupId) {
+  if (!plan.bound_groups) {
+    plan.bound_groups = [];
+  }
+
+  if (!plan.bound_groups.includes(groupId)) {
+    plan.bound_groups.push(groupId);
+  }
+}
+
+function unbindGroupFromOwner(plan, groupId) {
+  if (!plan?.bound_groups) return;
+  plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
+}
+
+function createPaidPlanObject(userId, planType, groupLimit, days, oldPlan = null) {
+  return {
+    user_id: userId,
+    plan_type: planType,
+    group_limit: groupLimit,
+    vip_expires_at: addDays(days),
+    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    daily_limit: null,
+    trial_type: null,
+  };
+}
+
+function createFreeTrialPlanObject(userId, oldPlan = null) {
+  return {
+    user_id: userId,
+    plan_type: "free_trial",
+    group_limit: 1,
+    vip_expires_at: null,
+    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    daily_limit: 20,
+    trial_type: "每日免費20句",
+  };
+}
+
+function create7DayTrialPlanObject(userId, oldPlan = null) {
+  return {
+    user_id: userId,
+    plan_type: "trial_7days",
+    group_limit: null,
+    vip_expires_at: addDays(7),
+    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    daily_limit: null,
+    trial_type: "7天試用不限群組",
+  };
+}
+
+function disablePlanObject(plan, userId) {
+  return {
+    user_id: userId,
+    plan_type: plan?.plan_type || null,
+    group_limit: plan?.group_limit ?? null,
+    vip_expires_at: new Date(Date.now() - 1000).toISOString(),
+    bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
+    daily_limit: plan?.daily_limit ?? null,
+    trial_type: plan?.trial_type ?? null,
+  };
+}
+
+async function handleJoin(event) {
+  const chatId = getChatId(event);
+  await ensureGroupDb(chatId);
+  await pushLanguageMenu(chatId);
+}
+
+async function handleFollow(event) {
+  const chatId = getChatId(event);
+  const userId = event.source.userId;
+
+  const group = await ensureGroupDb(chatId);
+
+  if (!group.owner_id) {
+    group.owner_id = userId;
+  }
+  addAdmin(group, userId);
+  await saveGroup(group);
+
+  let plan = await getPlan(userId);
+  if (!plan) {
+    plan = createFreeTrialPlanObject(userId);
+    await savePlan(plan);
+  }
+
+  await replyMessages(event.replyToken, [
+    buildLanguageMenuFlex(),
+    { type: "text", text: "歡迎使用翻譯機器人。你目前可每日免費使用 20 句。" },
+  ]);
+}
+
+async function handlePostback(event) {
+  const chatId = getChatId(event);
+  const userId = event.source.userId;
+
+  const group = await ensureGroupDb(chatId);
+  const { action, lang } = parsePostbackData(event.postback.data || "");
+
+  if (!LANG_LABELS[lang]) {
+    await replyText(event.replyToken, "語言不支援。");
+    return;
+  }
+
+  let userPlan = await getPlan(userId);
+
+  if (!userPlan) {
+    userPlan = createFreeTrialPlanObject(userId);
+    await savePlan(userPlan);
+  }
+
+  if (!group.owner_id) {
+    if (!isPlanActive(userPlan)) {
+      await replyText(event.replyToken, "你目前沒有有效方案，無法設定此群語言。");
+      return;
+    }
+
+    if (!canUseGroup(userPlan, chatId)) {
+      await replyText(event.replyToken, "你的方案可用群組數量已滿，無法綁定此群。");
+      return;
+    }
+
+    group.owner_id = userId;
+    addAdmin(group, userId);
+    bindGroupToOwner(userPlan, chatId);
+
+    if (action === "add_lang" && !group.langs.includes(lang)) {
+      group.langs.push(lang);
+    }
+
+    await saveGroup(group);
+    await savePlan(userPlan);
+
+    await replyText(
+      event.replyToken,
+      `已完成群組綁定，你現在是此群管理人。\n已加入語言：${LANG_LABELS[lang]} (${lang})`
+    );
+    return;
+  }
+
+  const ownerPlan = await getPlan(group.owner_id);
+
+  if (!isSuperAdmin(userId) && !canLanguageManage(group, ownerPlan, userId)) {
+    await replyText(event.replyToken, "只有此群的授權管理人可以設定語言，或方案可能已到期。");
+    return;
+  }
+
+  if (action === "add_lang") {
+    if (!group.langs.includes(lang)) {
+      group.langs.push(lang);
+    }
+    group.langs = normalizeLangList(group.langs);
+    await saveGroup(group);
+    await replyText(
+      event.replyToken,
+      `已加入語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${group.langs.join(", ")}`
+    );
+    return;
+  }
+
+  if (action === "remove_lang") {
+    group.langs = normalizeLangList(group.langs).filter((l) => l !== lang);
+    await saveGroup(group);
+    await replyText(
+      event.replyToken,
+      `已移除語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${group.langs.length ? group.langs.join(", ") : "無"}`
+    );
+    return;
+  }
+
+  await replyText(event.replyToken, "未知操作。");
+}
+
+async function handleCommand(event, rawText) {
+  const text = rawText.trim();
+  const parts = text.split(/\s+/);
+  const cmd = parts[0];
+  const arg = parts[1] || null;
+
+  const chatId = getChatId(event);
+  const userId = event.source.userId;
+
+  const group = await ensureGroupDb(chatId);
+
+  if (!group.owner_id && userId) {
+    group.owner_id = userId;
+  }
+  if ((group.admins || []).length === 0 && userId) {
+    addAdmin(group, userId);
+  }
+  await saveGroup(group);
+
+  const ownerId = group.owner_id;
+  let plan = ownerId ? await getPlan(ownerId) : null;
+
+  if (ownerId && !plan) {
+    plan = createFreeTrialPlanObject(ownerId);
+    await savePlan(plan);
+  }
+
+  const admin = isAdmin(group, userId);
+  const superAdmin = isSuperAdmin(userId);
+
+  if (cmd === "/help" || cmd === "/幫助") {
+    if (admin || superAdmin) {
+      await replyText(event.replyToken, buildAdminHelpText(superAdmin));
+    } else {
+      await replyText(event.replyToken, buildUserHelpText());
+    }
+    return true;
+  }
+
+  if (cmd === "/myid" || cmd === "/我的ID") {
+    await replyText(event.replyToken, `你的 userId：${userId || "目前抓不到 userId"}`);
+    return true;
+  }
+
+  if (cmd === "/status" || cmd === "/狀態") {
+    await replyText(event.replyToken, buildStatusText(group, plan));
+    return true;
+  }
+
+  if (cmd === "/langs" || cmd === "/語言") {
+    await replyText(
+      event.replyToken,
+      group.langs.length
+        ? `本群語言：${group.langs.map((l) => `${LANG_LABELS[l]}(${l})`).join("、")}`
+        : "本群尚未設定語言。"
+    );
+    return true;
+  }
+
+  if (cmd === "/expire" || cmd === "/取得時間" || cmd === "/到期時間") {
+    await replyText(
+      event.replyToken,
+      plan?.vip_expires_at
+        ? `你的使用期限到：${formatDateTime(plan.vip_expires_at)}`
+        : `目前方案：${plan?.plan_type || "未開通"}`
+    );
+    return true;
+  }
+
+  if (cmd === "/price" || cmd === "/價格") {
+    await replyText(
+      event.replyToken,
+      [
+        "翻譯機器人方案",
+        "新加入可每日免費20句",
+        "可指定開通 7天試用不限群組",
+        "正式方案請聯絡管理員",
+        "",
+        `詳情與開通請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+      ].join("\n")
+    );
+    return true;
+  }
+
+  if (cmd === "/myplan" || cmd === "/我的方案") {
+    await replyText(event.replyToken, buildStatusText(group, plan));
+    return true;
+  }
+
+  if (cmd === "/menu" || cmd === "/語言選單") {
+    if (!superAdmin && !canLanguageManage(group, plan, userId)) {
+      await replyText(event.replyToken, "你目前不能設定語言，可能是權限不足或方案已到期。");
+      return true;
+    }
+    await replyMessages(event.replyToken, [
+      buildLanguageMenuFlex(),
+      { type: "text", text: "請加入或移除本群要輸出的語言。" },
+    ]);
+    return true;
+  }
+
+  if (cmd === "/全部會員" || cmd === "/會員列表") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const page = parsePositiveInt(arg, 1);
+    const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
+
+    if (page > result.totalPages && result.total > 0) {
+      await replyText(event.replyToken, `頁數超出範圍，目前只有 ${result.totalPages} 頁。`);
+      return true;
+    }
+
+    const textResult = buildAllPlansText(result.rows, result.page, result.totalPages, result.total);
+    await replyText(event.replyToken, textResult);
+    return true;
+  }
+
+  if (cmd === "/bind" || cmd === "/綁定") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const currentPlan = await ensurePlanDb(ownerId);
+
+    if (!isPlanActive(currentPlan)) {
+      await replyText(event.replyToken, "此 owner 方案已到期或未開通。");
+      return true;
+    }
+
+    if (!canUseGroup(currentPlan, chatId)) {
+      await replyText(event.replyToken, "此方案的群組數量已滿，無法再綁定新群。");
+      return true;
+    }
+
+    bindGroupToOwner(currentPlan, chatId);
+    await savePlan(currentPlan);
+
+    await replyText(event.replyToken, `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`);
+    return true;
+  }
+
+  if (cmd === "/unbind" || cmd === "/解除綁定") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "尚未綁定方案。");
+      return true;
+    }
+
+    const currentPlan = await ensurePlanDb(ownerId);
+    unbindGroupFromOwner(currentPlan, chatId);
+    await savePlan(currentPlan);
+
+    await replyText(event.replyToken, "本群已解除綁定。");
+    return true;
+  }
+
+  if (cmd === "/plan1" || cmd === "/1群方案") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 1, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(event.replyToken, `已開通 1 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
+    return true;
+  }
+
+  if (cmd === "/plan3" || cmd === "/3群方案") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 3, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(event.replyToken, `已開通 3 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
+    return true;
+  }
+
+  if (cmd === "/plan5" || cmd === "/5群方案") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 5, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(event.replyToken, `已開通 5 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
+    return true;
+  }
+
+  if (cmd === "/planu30" || cmd === "/開通不限30") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId && !arg) {
+      await replyText(event.replyToken, "本群尚未設定 owner，或用法：/開通不限30 使用者ID");
+      return true;
+    }
+
+    if (arg) {
+      const oldPlan = await getPlan(arg);
+      const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
+      await savePlan(nextPlan);
+
+      await replyText(
+        event.replyToken,
+        `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      );
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(event.replyToken, `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
+    return true;
+  }
+
+  if (cmd === "/planu90" || cmd === "/開通不限90") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 90, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(event.replyToken, `已開通 90 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
+    return true;
+  }
+
+  if (cmd === "/setadmin" || cmd === "/新增管理員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/新增管理員 使用者ID");
+      return true;
+    }
+
+    addAdmin(group, arg);
+    await saveGroup(group);
+
+    await replyText(event.replyToken, `已新增管理員：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/deladmin" || cmd === "/刪除管理員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/刪除管理員 使用者ID");
+      return true;
+    }
+
+    if (group.owner_id === arg) {
+      await replyText(event.replyToken, "不能移除 owner 的管理員權限。");
+      return true;
+    }
+
+    removeAdmin(group, arg);
+    await saveGroup(group);
+
+    await replyText(event.replyToken, `已移除管理員：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/setowner" || cmd === "/設定擁有者") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/設定擁有者 使用者ID");
+      return true;
+    }
+
+    group.owner_id = arg;
+    addAdmin(group, arg);
+    await saveGroup(group);
+
+    let targetPlan = await getPlan(arg);
+    if (!targetPlan) {
+      targetPlan = createFreeTrialPlanObject(arg);
+      await savePlan(targetPlan);
+    }
+
+    await replyText(event.replyToken, `已設定 owner：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/開通1群") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/開通1群 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 1群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/開通3群") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/開通3群 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 3, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 3群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/開通5群") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/開通5群 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 5, 30, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 5群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/試用7天") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/試用7天 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 7天試用（不限群組）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/查方案") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/查方案 使用者ID");
+      return true;
+    }
+
+    const targetPlan = await getPlan(arg);
+    await replyText(event.replyToken, buildPlanText(arg, targetPlan));
+    return true;
+  }
+
+  if (cmd === "/停用") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/停用 使用者ID");
+      return true;
+    }
+
+    const current = await getPlan(arg);
+    const disabled = disablePlanObject(current, arg);
+    await savePlan(disabled);
+
+    await replyText(event.replyToken, `已停用方案：${arg}`);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleTextMessage(event) {
+  const text = (event.message?.text || "").trim();
+  if (!text) return;
+
+  if (text.startsWith("/")) {
+    const handled = await handleCommand(event, text);
+    if (handled) return;
+  }
+
+  const chatType = getChatType(event);
+  const chatId = getChatId(event);
+  const userId = event.source.userId;
+
+  const group = await ensureGroupDb(chatId);
+
+  let actingPlan = null;
+  let limitUserId = userId;
+
+  if (chatType === "user") {
+    actingPlan = await getPlan(userId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(userId);
+      await savePlan(actingPlan);
+    }
+  } else {
+    const ownerId = group.owner_id;
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
+      return;
+    }
+
+    actingPlan = await getPlan(ownerId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(ownerId);
+      await savePlan(actingPlan);
+    }
+    limitUserId = ownerId;
+  }
+
+  if (!isPlanActive(actingPlan)) {
+    await replyText(
+      event.replyToken,
+      [
+        "本群翻譯方案已到期",
+        "目前無法使用語言設定與自動翻譯",
+        "",
+        "如需續費開通",
+        `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (chatType !== "user" && !canUseGroup(actingPlan, chatId)) {
+    await replyText(event.replyToken, "此方案可用群組數量已滿，請升級方案。");
+    return;
+  }
+
+  if (chatType !== "user" && !(actingPlan.bound_groups || []).includes(chatId)) {
+    bindGroupToOwner(actingPlan, chatId);
+    await savePlan(actingPlan);
+  }
+
+  if (actingPlan.daily_limit) {
+    const limitResult = await checkDailyLimit(limitUserId, chatId, actingPlan.daily_limit);
+
+    if (!limitResult.allowed) {
+      await replyText(
+        event.replyToken,
+        [
+          "你目前為免費試用方案",
+          `今日免費 ${actingPlan.daily_limit} 句已用完`,
+          "",
+          "如需升級或開通 7 天試用",
+          `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+        ].join("\n")
+      );
+      return;
+    }
+  }
+
+  if (chatType === "user") {
+    const sourceLang = detectSourceLangSimple(text);
+
+    let targetLangs = [];
+
+    if (sourceLang === "th") {
+      targetLangs = ["zh-TW"];
+    } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
+      targetLangs = ["th"];
+    } else if (sourceLang === "en") {
+      targetLangs = ["zh-TW", "th"];
+    } else {
+      targetLangs = ["zh-TW"];
+    }
+
+    const results = await Promise.all(
+      targetLangs.map(async (lang) => {
+        try {
+          const translated = await translateToTarget(text, lang);
+          return safeTranslatedLine(lang, translated);
+        } catch (err) {
+          console.error(`translate ${lang} error:`, err);
+          return null;
+        }
+      })
+    );
+
+    const outputs = results.filter(Boolean);
+
+    if (!outputs.length) {
+      await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
+      return;
+    }
+
+    await replyText(event.replyToken, outputs.join("\n"));
+    return;
+  }
+
+  const targetLangs = normalizeLangList(group.langs || []);
+  if (!targetLangs.length) {
+    await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
+    return;
+  }
+
+  const sourceLang = detectSourceLangSimple(text);
+  const langsToTranslate = targetLangs
+    .filter((lang) => lang !== sourceLang)
+    .slice(0, 2);
+
+  if (!langsToTranslate.length) {
+    return;
+  }
+
+  const results = await Promise.all(
+    langsToTranslate.map(async (lang) => {
+      try {
+        const translated = await translateToTarget(text, lang);
+        return safeTranslatedLine(lang, translated);
+      } catch (err) {
+        console.error(`translate ${lang} error:`, err);
+        return null;
+      }
+    })
+  );
+
+  const outputs = results.filter(Boolean);
+
+  if (!outputs.length) {
+    await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
+    return;
+  }
+
+  await replyText(event.replyToken, outputs.join("\n"));
+}
+
+async function handleEvent(event) {
+  try {
+    if (event.type === "join") {
+      await handleJoin(event);
+      return;
+    }
+
+    if (event.type === "follow") {
+      await handleFollow(event);
+      return;
+    }
+
+    if (event.type === "postback") {
+      await handlePostback(event);
+      return;
+    }
+
+    if (event.type === "message" && event.message?.type === "text") {
+      await handleTextMessage(event);
+    }
+  } catch (err) {
+    console.error("handleEvent error =", err);
+    if (err?.stack) console.error(err.stack);
+
+    if (event?.replyToken) {
+      try {
+        await replyText(event.replyToken, "系統處理失敗，請稍後再試。");
+      } catch (replyErr) {
+        console.error("reply fallback error =", replyErr);
+      }
+    }
+  }
+}
+
+app.get("/", (_req, res) => {
+  res.status(200).send("LINE translator bot is running.");
+});
+
+app.get("/health", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW()");
+    res.status(200).json({
+      ok: true,
+      time: result.rows?.[0]?.now || null,
+    });
+  } catch (err) {
+    console.error("/health error =", err);
+    res.status(500).json({
+      ok: false,
+      error: String(err?.message || err),
+    });
+  }
+});
+
+app.post("/webhook", middleware(lineConfig), async (req, res) => {
+  res.sendStatus(200);
+
+  try {
+    const events = req.body.events || [];
+    for (const event of events) {
+      await handleEvent(event);
+    }
+  } catch (err) {
+    console.error("Webhook error:", err);
+    if (err?.stack) console.error(err.stack);
+  }
+});
+
+initDb()
+  .then(async () => {
+    try {
+      await pool.query("SELECT NOW()");
+    } catch (dbTestErr) {
+      console.error("DB connection test failed =", dbTestErr);
+      process.exit(1);
+    }
+
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("DB init error full =", err);
+    if (err?.stack) console.error(err.stack);
+    process.exit(1);
+  });
