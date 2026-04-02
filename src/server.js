@@ -828,7 +828,8 @@ function buildAdminHelpText(superAdmin) {
       "/查方案 使用者ID",
       "/停用 使用者ID",
       "/全部會員 [頁數]",
-      "/會員列表 [頁數]"
+      "/會員列表 [頁數]",
+      "/同步全部會員"
     );
   }
 
@@ -1106,6 +1107,20 @@ async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
     pageSize: safePageSize,
     totalPages: Math.max(1, Math.ceil(total / safePageSize)),
   };
+}
+
+async function getAllPlansNoPaging() {
+  const result = await pool.query(`
+    SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type, created_at
+    FROM plans
+    ORDER BY
+      CASE WHEN vip_expires_at IS NULL THEN 1 ELSE 0 END,
+      vip_expires_at DESC NULLS LAST,
+      created_at DESC,
+      user_id ASC
+  `);
+
+  return result.rows || [];
 }
 
 async function checkDailyLimit(userId, groupId, dailyLimit) {
@@ -1469,6 +1484,33 @@ async function handleCommand(event, rawText) {
 
     const textResult = buildAllPlansText(result.rows, result.page, result.totalPages, result.total);
     await replyText(event.replyToken, textResult);
+    return true;
+  }
+
+  if (cmd === "/同步全部會員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const allPlans = await getAllPlansNoPaging();
+
+    if (!allPlans.length) {
+      await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
+      return true;
+    }
+
+    let successCount = 0;
+
+    for (const planItem of allPlans) {
+      await syncMemberToGoogleSheet({
+        userId: planItem.user_id,
+      });
+      successCount += 1;
+    }
+
+    await replyText(event.replyToken, `已同步全部會員到 Google 試算表
+共 ${successCount} 筆`);
     return true;
   }
 
