@@ -40,7 +40,8 @@ if (missingVars.length > 0) {
 }
 
 const CONTACT_LINE_ID = "aszx88188";
-const GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
+const GOOGLE_SHEETS_WEBHOOK_URL =
+  "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
 const DEFAULT_TONE_MODE = "normal";
 const CACHE_VERSION = "v2";
@@ -55,14 +56,14 @@ const CONTEXT_TYPO_MAP = [
     wrong: "บอท",
     intended: "บอส",
     zh: "老闆",
-    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。"
+    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。",
   },
   {
     wrong: "บอก",
     intended: "บอส",
     zh: "老闆",
-    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。"
-  }
+    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
+  },
 ];
 
 const SUPER_ADMINS = [
@@ -279,7 +280,9 @@ function looksLikeThaiDialectText(text = "") {
 
   if (isVeryShortText(t)) return true;
 
-  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
+  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(
+    t
+  );
 }
 
 function looksLikeNamedEntityShortText(text = "") {
@@ -326,13 +329,13 @@ function buildFixedTermsHint(text = "") {
   return [
     "【固定術語表】",
     ...matched.map((item) => `${item.src} => ${item.target}`),
-    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。"
+    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。",
   ].join("\n");
 }
 
 function getMatchedContextTypos(text = "") {
   const t = String(text || "");
-  return CONTEXT_TYPO_MAP.filter(item => t.includes(item.wrong));
+  return CONTEXT_TYPO_MAP.filter((item) => t.includes(item.wrong));
 }
 
 function buildContextTypoHint(text = "") {
@@ -341,9 +344,11 @@ function buildContextTypoHint(text = "") {
 
   return [
     "【情境糾錯規則】",
-    ...matched.map(item => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`),
-    ...matched.map(item => item.hint),
-    "若上下文是在對真人說話，不可翻成機器人。"
+    ...matched.map(
+      (item) => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`
+    ),
+    ...matched.map((item) => item.hint),
+    "若上下文是在對真人說話，不可翻成機器人。",
   ].join("\n");
 }
 
@@ -362,7 +367,9 @@ function normalizeLangList(langs = []) {
 }
 
 function normalizeToneMode(mode = DEFAULT_TONE_MODE) {
-  const t = String(mode || DEFAULT_TONE_MODE).trim().toLowerCase();
+  const t = String(mode || DEFAULT_TONE_MODE)
+    .trim()
+    .toLowerCase();
   if (TONE_LABELS[t]) return t;
   return DEFAULT_TONE_MODE;
 }
@@ -375,7 +382,11 @@ function safeTranslatedLine(lang, translated) {
 
 function getGroupLimitText(plan) {
   if (!plan) return "未設定";
-  if (plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days") return "不限";
+  if (
+    plan.plan_type === "unlimited_groups" ||
+    plan.plan_type === "trial_7days"
+  )
+    return "不限";
   return String(plan.group_limit ?? "1");
 }
 
@@ -386,7 +397,9 @@ function parsePositiveInt(value, defaultValue = 1) {
 }
 
 function getToneLabel(mode) {
-  return TONE_LABELS[normalizeToneMode(mode)] || TONE_LABELS[DEFAULT_TONE_MODE];
+  return (
+    TONE_LABELS[normalizeToneMode(mode)] || TONE_LABELS[DEFAULT_TONE_MODE]
+  );
 }
 
 function getToneRulesForPrompt(toneMode, targetLang) {
@@ -397,18 +410,18 @@ function getToneRulesForPrompt(toneMode, targetLang) {
       return [
         "目標風格：甜聊模式。",
         "請翻成自然泰文聊天語氣，偏親近、柔和、像真人女生聊天。",
-        "可以自然一點，但不可過度油膩，不可自己加戲。"
+        "可以自然一點，但不可過度油膩，不可自己加戲。",
       ].join(" ");
     }
     if (tone === "formal") {
       return [
         "目標風格：正式模式。",
-        "請翻成自然且有禮貌的泰文，不要太嗲，不要輕浮。"
+        "請翻成自然且有禮貌的泰文，不要太嗲，不要輕浮。",
       ].join(" ");
     }
     return [
       "目標風格：一般模式。",
-      "請翻成自然泰文聊天用語，不要太書面，也不要過度曖昧。"
+      "請翻成自然泰文聊天用語，不要太書面，也不要過度曖昧。",
     ].join(" ");
   }
 
@@ -418,7 +431,7 @@ function getToneRulesForPrompt(toneMode, targetLang) {
       "請優先使用自然、柔和、生活化的聊天口氣。",
       "可適度使用「啦、喔、欸、呀」等自然語氣。",
       "像真人女生聊天，但不要過度油膩。",
-      "例如：ไม่กวน → 不吵你 / 不煩你；คิดถึง → 想你；ไปดูติ๊กต๊อก → 去滑TikTok。"
+      "例如：ไม่กวน → 不吵你 / 不煩你；คิดถึง → 想你；ไปดูติ๊กต๊อก → 去滑TikTok。",
     ].join(" ");
   }
 
@@ -427,7 +440,7 @@ function getToneRulesForPrompt(toneMode, targetLang) {
       "目標風格：正式模式。",
       "請翻成自然、有禮貌、穩定的中文。",
       "可稍正式，但不要太硬，不要太冷。",
-      "例如：ไม่กวน → 不打擾你；กินข้าวยัง → 你吃飯了嗎；ทำอะไรอยู่ → 你現在在忙什麼。"
+      "例如：ไม่กวน → 不打擾你；กินข้าวยัง → 你吃飯了嗎；ทำอะไรอยู่ → 你現在在忙什麼。",
     ].join(" ");
   }
 
@@ -435,11 +448,17 @@ function getToneRulesForPrompt(toneMode, targetLang) {
     "目標風格：一般模式。",
     "請翻成自然口語、正常聊天感。",
     "不要太正式，也不要太嗲。",
-    "例如：ไม่กวน → 不吵你；กินข้าวยัง → 吃了沒；ทำอะไรอยู่ → 在幹嘛。"
+    "例如：ไม่กวน → 不吵你；กินข้าวยัง → 吃了沒；ทำอะไรอยู่ → 在幹嘛。",
   ].join(" ");
 }
 
-function buildStablePrompt({ text, targetLang, sourceHint = "auto", specialHint = "", toneMode = DEFAULT_TONE_MODE }) {
+function buildStablePrompt({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  specialHint = "",
+  toneMode = DEFAULT_TONE_MODE,
+}) {
   const targetName = getLangPureName(targetLang);
   const fixedTermsHint = buildFixedTermsHint(text);
   const contextTypoHint = buildContextTypoHint(text);
@@ -486,14 +505,32 @@ ${text}
   `.trim();
 }
 
-function buildCacheKey({ text, targetLang, sourceHint = "auto", toneMode = DEFAULT_TONE_MODE }) {
+function buildCacheKey({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  toneMode = DEFAULT_TONE_MODE,
+}) {
   return crypto
     .createHash("sha1")
-    .update([CACHE_VERSION, String(sourceHint), String(targetLang), normalizeToneMode(toneMode), String(text)].join("__"))
+    .update(
+      [
+        CACHE_VERSION,
+        String(sourceHint),
+        String(targetLang),
+        normalizeToneMode(toneMode),
+        String(text),
+      ].join("__")
+    )
     .digest("hex");
 }
 
-async function getTranslationCache({ text, targetLang, sourceHint = "auto", toneMode = DEFAULT_TONE_MODE }) {
+async function getTranslationCache({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  toneMode = DEFAULT_TONE_MODE,
+}) {
   const cacheKey = buildCacheKey({ text, targetLang, sourceHint, toneMode });
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
@@ -502,7 +539,13 @@ async function getTranslationCache({ text, targetLang, sourceHint = "auto", tone
   return result.rows?.[0]?.translated_text || null;
 }
 
-async function saveTranslationCache({ text, translatedText, targetLang, sourceHint = "auto", toneMode = DEFAULT_TONE_MODE }) {
+async function saveTranslationCache({
+  text,
+  translatedText,
+  targetLang,
+  sourceHint = "auto",
+  toneMode = DEFAULT_TONE_MODE,
+}) {
   const cacheKey = buildCacheKey({ text, targetLang, sourceHint, toneMode });
   await pool.query(
     `
@@ -511,7 +554,14 @@ async function saveTranslationCache({ text, translatedText, targetLang, sourceHi
     ON CONFLICT (cache_key)
     DO UPDATE SET translated_text = EXCLUDED.translated_text, created_at = NOW()
     `,
-    [cacheKey, text, targetLang, sourceHint, normalizeToneMode(toneMode), translatedText]
+    [
+      cacheKey,
+      text,
+      targetLang,
+      sourceHint,
+      normalizeToneMode(toneMode),
+      translatedText,
+    ]
   );
 }
 
@@ -522,7 +572,12 @@ async function askModelTranslate({
   specialHint = "",
   toneMode = DEFAULT_TONE_MODE,
 }) {
-  const cached = await getTranslationCache({ text, targetLang, sourceHint, toneMode });
+  const cached = await getTranslationCache({
+    text,
+    targetLang,
+    sourceHint,
+    toneMode,
+  });
   if (cached) return cleanupTranslation(cached);
 
   const prompt = buildStablePrompt({
@@ -562,7 +617,11 @@ async function verifyPlaceNameOnline(text) {
   };
 }
 
-async function translateThaiDialectToChinese(text, targetLang = "zh-TW", toneMode = DEFAULT_TONE_MODE) {
+async function translateThaiDialectToChinese(
+  text,
+  targetLang = "zh-TW",
+  toneMode = DEFAULT_TONE_MODE
+) {
   const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
@@ -580,12 +639,20 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW", toneMod
 若碰到無法確認正式中文的地名、人名、店名：
 - 若固定術語表已指定，必須照固定術語表
 - 若未指定，才可用中文諧音或音譯呈現
-${allowOriginalTerm ? "若固定術語表指定保留原詞，可保留該原詞。" : `目標語言必須是純${targetName}。`}
+${
+  allowOriginalTerm
+    ? "若固定術語表指定保留原詞，可保留該原詞。"
+    : `目標語言必須是純${targetName}。`
+}
     `.trim(),
   });
 }
 
-async function translateToTarget(text, targetLang, toneMode = DEFAULT_TONE_MODE) {
+async function translateToTarget(
+  text,
+  targetLang,
+  toneMode = DEFAULT_TONE_MODE
+) {
   const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
@@ -594,14 +661,20 @@ async function translateToTarget(text, targetLang, toneMode = DEFAULT_TONE_MODE)
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && possiblePlaceName) {
+  if (
+    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
+    possiblePlaceName
+  ) {
     const verified = await verifyPlaceNameOnline(text);
     if (verified?.found && verified?.zhName && verified.confidence >= 0.85) {
       return verified.zhName;
     }
   }
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
+  if (
+    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
+    (thaiShortChat || thaiDialect)
+  ) {
     return await translateThaiDialectToChinese(text, targetLang, toneMode);
   }
 
@@ -620,7 +693,8 @@ async function translateToTarget(text, targetLang, toneMode = DEFAULT_TONE_MODE)
   }
 
   if (namedEntityShort) {
-    specialHint += " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
   }
 
   if (targetLang === "th") {
@@ -628,11 +702,13 @@ async function translateToTarget(text, targetLang, toneMode = DEFAULT_TONE_MODE)
   }
 
   if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint +=
+      " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint +=
+      " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "en") {
@@ -671,7 +747,11 @@ async function translateToTarget(text, targetLang, toneMode = DEFAULT_TONE_MODE)
     }
   }
 
-  if (targetLang === "en" && /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) && !/[A-Za-z]/.test(output)) {
+  if (
+    targetLang === "en" &&
+    /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) &&
+    !/[A-Za-z]/.test(output)
+  ) {
     output = await askModelTranslate({
       text,
       targetLang,
@@ -932,8 +1012,7 @@ function buildUserHelpText() {
     "1群 / 月：500",
     "不限群 / 月：1500",
     `續費請聯絡 LINE：${CONTACT_LINE_ID}`,
-  ].join("
-");
+  ].join("\n");
 }
 
 function buildAdminHelpText(superAdmin) {
@@ -971,8 +1050,7 @@ function buildAdminHelpText(superAdmin) {
     );
   }
 
-  return lines.join("
-");
+  return lines.join("\n");
 }
 
 function buildAllPlansText(plans = [], page = 1, totalPages = 1, totalCount = 0) {
@@ -1116,7 +1194,9 @@ async function ensureGroupDb(chatId) {
 
 async function saveGroup(group) {
   group.langs = normalizeLangList(group.langs || []);
-  group.admins = Array.isArray(group.admins) ? [...new Set(group.admins.filter(Boolean))] : [];
+  group.admins = Array.isArray(group.admins)
+    ? [...new Set(group.admins.filter(Boolean))]
+    : [];
   group.tone_mode = normalizeToneMode(group.tone_mode);
 
   await pool.query(
@@ -1182,7 +1262,9 @@ async function savePlan(plan) {
       plan.plan_type,
       plan.group_limit,
       plan.vip_expires_at,
-      JSON.stringify(Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []),
+      JSON.stringify(
+        Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []
+      ),
       plan.daily_limit ?? null,
       plan.trial_type ?? null,
     ]
@@ -1221,7 +1303,9 @@ async function syncMemberToGoogleSheet({
         plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
           ? "不限"
           : String(plan.group_limit ?? "1"),
-      boundGroupCount: Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0,
+      boundGroupCount: Array.isArray(plan.bound_groups)
+        ? plan.bound_groups.length
+        : 0,
       openedAt: openedAt || getNowTaipeiString(),
       expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
       vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
@@ -1363,7 +1447,9 @@ function createPaidPlanObject(userId, planType, groupLimit, days, oldPlan = null
     plan_type: planType,
     group_limit: groupLimit,
     vip_expires_at: addDays(days),
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
     daily_limit: null,
     trial_type: null,
   };
@@ -1375,7 +1461,9 @@ function createFreeTrialPlanObject(userId, oldPlan = null) {
     plan_type: "free_trial",
     group_limit: 1,
     vip_expires_at: null,
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)].slice(0, 1) : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)].slice(0, 1)
+      : [],
     daily_limit: 20,
     trial_type: "每日免費20句",
   };
@@ -1387,23 +1475,11 @@ function create7DayTrialPlanObject(userId, oldPlan = null) {
     plan_type: "trial_7days",
     group_limit: null,
     vip_expires_at: addDays(7),
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
     daily_limit: null,
     trial_type: "7天試用不限群組不限句數",
-  };
-}
-
-function create1Group7DayTrialPlanObject(userId, oldPlan = null) {
-  const oldGroups = Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [];
-
-  return {
-    user_id: userId,
-    plan_type: "limited_groups",
-    group_limit: 1,
-    vip_expires_at: addDays(7),
-    bound_groups: oldGroups.slice(0, 1),
-    daily_limit: null,
-    trial_type: "1群7天試用",
   };
 }
 
@@ -1502,7 +1578,10 @@ async function handlePostback(event) {
   const ownerPlan = await getPlan(group.owner_id);
 
   if (!isSuperAdmin(userId) && !canLanguageManage(group, ownerPlan, userId)) {
-    await replyText(event.replyToken, "只有此群的授權管理人可以設定語言，或方案可能已到期。");
+    await replyText(
+      event.replyToken,
+      "只有此群的授權管理人可以設定語言，或方案可能已到期。"
+    );
     return;
   }
 
@@ -1524,7 +1603,9 @@ async function handlePostback(event) {
     await saveGroup(group);
     await replyText(
       event.replyToken,
-      `已移除語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${group.langs.length ? group.langs.join(", ") : "無"}`
+      `已移除語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${
+        group.langs.length ? group.langs.join(", ") : "無"
+      }`
     );
     return;
   }
@@ -1588,7 +1669,9 @@ async function handleCommand(event, rawText) {
     await replyText(
       event.replyToken,
       group.langs.length
-        ? `本群語言：${group.langs.map((l) => `${LANG_LABELS[l]}(${l})`).join("、")}\n語氣模式：${getToneLabel(group.tone_mode)}`
+        ? `本群語言：${group.langs
+            .map((l) => `${LANG_LABELS[l]}(${l})`)
+            .join("、")}\n語氣模式：${getToneLabel(group.tone_mode)}`
         : `本群尚未設定語言。\n語氣模式：${getToneLabel(group.tone_mode)}`
     );
     return true;
@@ -1601,7 +1684,10 @@ async function handleCommand(event, rawText) {
 
   if (cmd === "/甜聊模式" || cmd === "/一般模式" || cmd === "/正式模式") {
     if (!superAdmin && !canLanguageManage(group, plan, userId)) {
-      await replyText(event.replyToken, "你目前不能切換語氣模式，可能是權限不足或方案已到期。");
+      await replyText(
+        event.replyToken,
+        "你目前不能切換語氣模式，可能是權限不足或方案已到期。"
+      );
       return true;
     }
 
@@ -1635,8 +1721,386 @@ async function handleCommand(event, rawText) {
         "不限群 / 月：1500",
         "",
         `詳情與開通請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
-      ].join("
-")
+      ].join("\n")
+    );
+    return true;
+  }
+
+  if (cmd === "/myplan" || cmd === "/我的方案") {
+    await replyText(event.replyToken, buildStatusText(group, plan));
+    return true;
+  }
+
+  if (cmd === "/menu" || cmd === "/語言選單") {
+    if (!superAdmin && !canLanguageManage(group, plan, userId)) {
+      await replyText(
+        event.replyToken,
+        "你目前不能設定語言，可能是權限不足或方案已到期。"
+      );
+      return true;
+    }
+    await replyMessages(event.replyToken, [
+      buildLanguageMenuFlex(),
+      { type: "text", text: `請加入或移除本群要輸出的語言。\n目前語氣模式：${getToneLabel(group.tone_mode)}` },
+    ]);
+    return true;
+  }
+
+  if (cmd === "/全部會員" || cmd === "/會員列表") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const page = parsePositiveInt(arg, 1);
+    const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
+
+    if (page > result.totalPages && result.total > 0) {
+      await replyText(
+        event.replyToken,
+        `頁數超出範圍，目前只有 ${result.totalPages} 頁。`
+      );
+      return true;
+    }
+
+    await replyText(
+      event.replyToken,
+      buildAllPlansText(result.rows, result.page, result.totalPages, result.total)
+    );
+    return true;
+  }
+
+  if (cmd === "/同步全部會員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const allPlans = await getAllPlansNoPaging();
+
+    if (!allPlans.length) {
+      await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
+      return true;
+    }
+
+    let successCount = 0;
+    for (const planItem of allPlans) {
+      await syncMemberToGoogleSheet({ userId: planItem.user_id });
+      successCount += 1;
+    }
+
+    await replyText(
+      event.replyToken,
+      `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`
+    );
+    return true;
+  }
+
+  if (cmd === "/bind" || cmd === "/綁定") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定 owner。");
+      return true;
+    }
+
+    const currentPlan = await ensurePlanDb(ownerId);
+
+    if (!isPlanActive(currentPlan)) {
+      await replyText(event.replyToken, "此 owner 方案已到期或未開通。");
+      return true;
+    }
+
+    if (!canUseGroup(currentPlan, chatId)) {
+      await replyText(
+        event.replyToken,
+        "此方案的群組數量已滿，無法再綁定新群。"
+      );
+      return true;
+    }
+
+    bindGroupToOwner(currentPlan, chatId);
+    await savePlan(currentPlan);
+
+    await replyText(
+      event.replyToken,
+      `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`
+    );
+    return true;
+  }
+
+  if (cmd === "/unbind" || cmd === "/解除綁定") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId) {
+      await replyText(event.replyToken, "尚未綁定方案。");
+      return true;
+    }
+
+    const currentPlan = await ensurePlanDb(ownerId);
+    unbindGroupFromOwner(currentPlan, chatId);
+    await savePlan(currentPlan);
+
+    await replyText(event.replyToken, "本群已解除綁定。");
+    return true;
+  }
+
+  if (cmd === "/setadmin" || cmd === "/新增管理員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/新增管理員 使用者ID");
+      return true;
+    }
+
+    addAdmin(group, arg);
+    await saveGroup(group);
+    await replyText(event.replyToken, `已新增管理員：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/deladmin" || cmd === "/刪除管理員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/刪除管理員 使用者ID");
+      return true;
+    }
+
+    if (group.owner_id === arg) {
+      await replyText(event.replyToken, "不能移除 owner 的管理員權限。");
+      return true;
+    }
+
+    removeAdmin(group, arg);
+    await saveGroup(group);
+    await replyText(event.replyToken, `已移除管理員：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/setowner" || cmd === "/設定擁有者") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/設定擁有者 使用者ID");
+      return true;
+    }
+
+    group.owner_id = arg;
+    addAdmin(group, arg);
+    await saveGroup(group);
+
+    let targetPlan = await getPlan(arg);
+    if (!targetPlan) {
+      targetPlan = createFreeTrialPlanObject(arg);
+      await savePlan(targetPlan);
+    }
+
+    await replyText(event.replyToken, `已設定 owner：${arg}`);
+    return true;
+  }
+
+  if (cmd === "/開通1群") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/開通1群 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
+    await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
+
+    await replyText(
+      event.replyToken,
+      `已開通 1群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/planu30" || cmd === "/開通不限30") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!ownerId && !arg) {
+      await replyText(
+        event.replyToken,
+        "本群尚未設定 owner，或用法：/開通不限30 使用者ID"
+      );
+      return true;
+    }
+
+    if (arg) {
+      const oldPlan = await getPlan(arg);
+      const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
+      await savePlan(nextPlan);
+      await syncMemberToGoogleSheet({
+        userId: arg,
+        openedAt: getNowTaipeiString(),
+      });
+
+      await replyText(
+        event.replyToken,
+        `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      );
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
+    await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: ownerId,
+      openedAt: getNowTaipeiString(),
+    });
+
+    await replyText(
+      event.replyToken,
+      `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/試用7天") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/試用7天 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
+    await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
+
+    await replyText(
+      event.replyToken,
+      `已開通 7天試用（不限群組 / 不限句數）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/查方案") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/查方案 使用者ID");
+      return true;
+    }
+
+    const targetPlan = await getPlan(arg);
+    await replyText(event.replyToken, buildPlanText(arg, targetPlan));
+    return true;
+  }
+
+  if (cmd === "/停用") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/停用 使用者ID");
+      return true;
+    }
+
+    const current = await getPlan(arg);
+    const disabled = disablePlanObject(current, arg);
+    await savePlan(disabled);
+    await syncMemberToGoogleSheet({ userId: arg });
+
+    await replyText(event.replyToken, `已停用方案：${arg}`);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleTextMessage(event) {
+  const text = (event.message?.text || "").trim();
+  if (!text) return;
+
+  if (text.startsWith("/")) {
+    const handled = await handleCommand(event, text);
+    if (handled) return;
+  }
+
+  const chatType = getChatType(event);
+  const chatId = getChatId(event);
+  const userId = event.source.userId;
+
+  const group = await ensureGroupDb(chatId);
+  const toneMode = normalizeToneMode(group?.tone_mode || DEFAULT_TONE_MODE);
+
+  let actingPlan = null;
+  let limitUserId = userId;
+
+  if (chatType === "user") {
+    actingPlan = await getPlan(userId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(userId);
+      await savePlan(actingPlan);
+    }
+  } else {
+    const ownerId = group.owner_id;
+    if (!ownerId) {
+      await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
+      return;
+    }
+
+    actingPlan = await getPlan(ownerId);
+    if (!actingPlan) {
+      actingPlan = createFreeTrialPlanObject(ownerId);
+      await savePlan(actingPlan);
+    }
+    limitUserId = ownerId;
+  }
+
+  if (!isPlanActive(actingPlan)) {
+    await replyText(
+      event.replyToken,
+      [
+        "本群翻譯方案已到期",
+        "目前無法使用語言設定與自動翻譯",
+        "",
+        "如需續費開通",
+        `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+      ].join("\n")
     );
     return;
   }
@@ -1652,7 +2116,11 @@ async function handleCommand(event, rawText) {
   }
 
   if (actingPlan.daily_limit) {
-    const limitResult = await checkDailyLimit(limitUserId, chatId, actingPlan.daily_limit);
+    const limitResult = await checkDailyLimit(
+      limitUserId,
+      chatId,
+      actingPlan.daily_limit
+    );
 
     if (!limitResult.allowed) {
       await replyText(
