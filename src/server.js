@@ -823,6 +823,7 @@ function buildAdminHelpText(superAdmin) {
       "/開通3群 使用者ID",
       "/開通5群 使用者ID",
       "/試用7天 使用者ID",
+      "/試用1群7天 使用者ID",
       "/查方案 使用者ID",
       "/停用 使用者ID",
       "/全部會員 [頁數]",
@@ -1158,6 +1159,20 @@ function create7DayTrialPlanObject(userId, oldPlan = null) {
     bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
     daily_limit: null,
     trial_type: "7天試用不限群組",
+  };
+}
+
+function create1Group7DayTrialPlanObject(userId, oldPlan = null) {
+  const oldGroups = Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [];
+
+  return {
+    user_id: userId,
+    plan_type: "limited_groups",
+    group_limit: 1,
+    vip_expires_at: addDays(7),
+    bound_groups: oldGroups.slice(0, 1),
+    daily_limit: null,
+    trial_type: "1群7天試用",
   };
 }
 
@@ -1709,7 +1724,33 @@ async function handleCommand(event, rawText) {
 
     await replyText(
       event.replyToken,
-      `已開通 7天試用（不限群組）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 7天試用（不限群組）
+使用者：${arg}
+到期：${formatDateTime(nextPlan.vip_expires_at)}`
+    );
+    return true;
+  }
+
+  if (cmd === "/試用1群7天") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/試用1群7天 使用者ID");
+      return true;
+    }
+
+    const oldPlan = await getPlan(arg);
+    const nextPlan = create1Group7DayTrialPlanObject(arg, oldPlan);
+    await savePlan(nextPlan);
+
+    await replyText(
+      event.replyToken,
+      `已開通 1群7天試用
+使用者：${arg}
+到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
