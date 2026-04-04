@@ -43,8 +43,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const DEFAULT_TONE_MODE = "normal";
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -70,12 +69,6 @@ const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
   "Uceba5819446e95c6cb0f12f8e27157aa",
 ];
-
-const TONE_LABELS = {
-  sweet: "甜聊模式",
-  normal: "一般模式",
-  formal: "正式模式",
-};
 
 const app = express();
 
@@ -268,7 +261,7 @@ function looksLikeThaiShortChat(text = "") {
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
       t
     )
   );
@@ -366,14 +359,6 @@ function normalizeLangList(langs = []) {
   return result;
 }
 
-function normalizeToneMode(mode = DEFAULT_TONE_MODE) {
-  const t = String(mode || DEFAULT_TONE_MODE)
-    .trim()
-    .toLowerCase();
-  if (TONE_LABELS[t]) return t;
-  return DEFAULT_TONE_MODE;
-}
-
 function safeTranslatedLine(lang, translated) {
   const clean = cleanupTranslation(translated);
   if (!clean) return null;
@@ -396,68 +381,11 @@ function parsePositiveInt(value, defaultValue = 1) {
   return num;
 }
 
-function getToneLabel(mode) {
-  return (
-    TONE_LABELS[normalizeToneMode(mode)] || TONE_LABELS[DEFAULT_TONE_MODE]
-  );
-}
-
-function getToneRulesForPrompt(toneMode, targetLang) {
-  const tone = normalizeToneMode(toneMode);
-
-  if (targetLang === "th") {
-    if (tone === "sweet") {
-      return [
-        "目標風格：甜聊模式。",
-        "請翻成自然泰文聊天語氣，偏親近、柔和、像真人女生聊天。",
-        "可以自然一點，但不可過度油膩，不可自己加戲。",
-      ].join(" ");
-    }
-    if (tone === "formal") {
-      return [
-        "目標風格：正式模式。",
-        "請翻成自然且有禮貌的泰文，不要太嗲，不要輕浮。",
-      ].join(" ");
-    }
-    return [
-      "目標風格：一般模式。",
-      "請翻成自然泰文聊天用語，不要太書面，也不要過度曖昧。",
-    ].join(" ");
-  }
-
-  if (tone === "sweet") {
-    return [
-      "目標風格：甜聊模式。",
-      "請優先使用自然、柔和、生活化的聊天口氣。",
-      "可適度使用「啦、喔、欸、呀」等自然語氣。",
-      "像真人女生聊天，但不要過度油膩。",
-      "例如：ไม่กวน → 不吵你 / 不煩你；คิดถึง → 想你；ไปดูติ๊กต๊อก → 去滑TikTok。",
-    ].join(" ");
-  }
-
-  if (tone === "formal") {
-    return [
-      "目標風格：正式模式。",
-      "請翻成自然、有禮貌、穩定的中文。",
-      "可稍正式，但不要太硬，不要太冷。",
-      "例如：ไม่กวน → 不打擾你；กินข้าวยัง → 你吃飯了嗎；ทำอะไรอยู่ → 你現在在忙什麼。",
-    ].join(" ");
-  }
-
-  return [
-    "目標風格：一般模式。",
-    "請翻成自然口語、正常聊天感。",
-    "不要太正式，也不要太嗲。",
-    "例如：ไม่กวน → 不吵你；กินข้าวยัง → 吃了沒；ทำอะไรอยู่ → 在幹嘛。",
-  ].join(" ");
-}
-
 function buildStablePrompt({
   text,
   targetLang,
   sourceHint = "auto",
   specialHint = "",
-  toneMode = DEFAULT_TONE_MODE,
 }) {
   const targetName = getLangPureName(targetLang);
   const fixedTermsHint = buildFixedTermsHint(text);
@@ -469,15 +397,24 @@ function buildStablePrompt({
 任務：
 把以下內容翻譯成「${targetName}」。
 
+核心原則：
+1. 使用者說什麼，就翻什麼
+2. 可以參考前後文判斷正確意思
+3. 但不可增加、刪減、改寫原句內容
+4. 不可補主詞、補客套、補情緒、補完整句
+5. 不可把原句翻得更甜、更正式、更自然化
+6. 只允許在避免翻錯意思時使用上下文
+7. 翻譯結果必須保留原句強度、否定、語氣與句型重心
+
 翻譯規則：
 1. 只做翻譯，不可回話
 2. 不可腦補對話、人物關係、情緒
-3. 優先忠實表達原句，不要自行美化
-4. 不要把原本沒講的客套話加進去
+3. 不可增加原文沒有的內容
+4. 不可刪除原文任何重要詞語，尤其否定詞
 5. 不要把簡短句子擴寫成禮貌句
 6. 不要自行補上「謝謝、辛苦了、麻煩了、請、thanks for your hard work」等客套內容
-7. 使用者說什麼，就翻什麼，保持原句強度與語氣
-8. 若原文很短，翻譯也保持簡短
+7. 若原文很短，翻譯也保持簡短
+8. 不可因為看懂上下文，就把原文改寫成別種說法
 9. 人名、暱稱、店名、地名、公司名、專有名詞、金額、時間，若能確認正式中文，直接使用正式中文
 10. 若無法確認正式中文，但看起來像地名、人名、店名或其他專有名詞，不可直接整段不翻
 11. 查不到正式名稱時，請優先用自然的中文音譯或諧音方式表達，讓讀者可依上下文猜測意思
@@ -487,22 +424,25 @@ function buildStablePrompt({
 15. 不可輸出「好的親愛的、Yes dear、OK honey」這種腦補內容
 16. 原文可能是 LINE 對話、泰國口語、方言、混合語言
 17. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
-18. 相同句子在相同模式下，盡量維持一致，不要每次換不同說法
-19. 優先使用簡單、固定、自然的詞，不要忽長忽短
+18. 相同句子在相同情境下，盡量維持一致
+19. 優先使用簡單、固定、自然的詞
 20. 只輸出最終翻譯結果
 21. 若固定術語表有指定詞語，必須優先使用，不可改寫
 22. 若原文有常見誤拼、近音字、聊天誤打，必須優先依上下文修正後再翻譯
 23. 在真人聊天情境中，若「บอท / บอก」更可能是誤打的「บอส」，優先翻成「老闆」，不要翻成「機器人」
 24. 禁止把原句改寫成更客氣、更自然、或更符合當地聊天文化的說法
 25. 必須優先保留使用者原本的字面意思與語氣
+26. 允許依上下文判斷正確意思，但不可改寫句子
 
 特別規則：
 - 中文「辛苦了」只有在原文真的有這句時才翻
 - 中文「好」就翻成「โอเค / ได้ / okay」這類對應說法，不要自動補成感謝句
+- 泰文簡短回覆（如 ไม่ / ได้ / เอา / ไม่เอา）可依前文判斷真正意思
+- 但判斷完後仍要保持短句，不可擴寫
 - 不要因為語氣自然就擅自改變原意
 
 來源語言提示：${sourceHint}
-語氣模式：直譯優先模式
+翻譯模式：正常直譯（禁止改寫）
 補充提示：${specialHint || "無"}
 
 ${fixedTermsHint || ""}
@@ -517,7 +457,6 @@ function buildCacheKey({
   text,
   targetLang,
   sourceHint = "auto",
-  toneMode = DEFAULT_TONE_MODE,
 }) {
   return crypto
     .createHash("sha1")
@@ -526,7 +465,7 @@ function buildCacheKey({
         CACHE_VERSION,
         String(sourceHint),
         String(targetLang),
-        normalizeToneMode(toneMode),
+        "normal",
         String(text),
       ].join("__")
     )
@@ -537,9 +476,8 @@ async function getTranslationCache({
   text,
   targetLang,
   sourceHint = "auto",
-  toneMode = DEFAULT_TONE_MODE,
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint, toneMode });
+  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
     [cacheKey]
@@ -552,9 +490,8 @@ async function saveTranslationCache({
   translatedText,
   targetLang,
   sourceHint = "auto",
-  toneMode = DEFAULT_TONE_MODE,
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint, toneMode });
+  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
   await pool.query(
     `
     INSERT INTO translation_cache (cache_key, source_text, target_lang, source_hint, tone_mode, translated_text)
@@ -567,7 +504,7 @@ async function saveTranslationCache({
       text,
       targetLang,
       sourceHint,
-      normalizeToneMode(toneMode),
+      "normal",
       translatedText,
     ]
   );
@@ -578,13 +515,11 @@ async function askModelTranslate({
   targetLang,
   sourceHint = "auto",
   specialHint = "",
-  toneMode = DEFAULT_TONE_MODE,
 }) {
   const cached = await getTranslationCache({
     text,
     targetLang,
     sourceHint,
-    toneMode,
   });
   if (cached) return cleanupTranslation(cached);
 
@@ -593,7 +528,6 @@ async function askModelTranslate({
     targetLang,
     sourceHint,
     specialHint,
-    toneMode,
   });
 
   const response = await openai.responses.create({
@@ -609,7 +543,6 @@ async function askModelTranslate({
       translatedText: output,
       targetLang,
       sourceHint,
-      toneMode,
     });
   }
 
@@ -627,8 +560,7 @@ async function verifyPlaceNameOnline(text) {
 
 async function translateThaiDialectToChinese(
   text,
-  targetLang = "zh-TW",
-  toneMode = DEFAULT_TONE_MODE
+  targetLang = "zh-TW"
 ) {
   const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
@@ -638,7 +570,6 @@ async function translateThaiDialectToChinese(
     text,
     targetLang,
     sourceHint: "泰文或泰國方言",
-    toneMode,
     specialHint: `
 這段可能含泰國各地口語或方言。
 像「ยัง / ยังคะ / ยังค่ะ」這類超短句，優先理解成：
@@ -656,11 +587,7 @@ ${
   });
 }
 
-async function translateToTarget(
-  text,
-  targetLang,
-  toneMode = DEFAULT_TONE_MODE
-) {
+async function translateToTarget(text, targetLang) {
   const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
@@ -683,7 +610,7 @@ async function translateToTarget(
     (targetLang === "zh-TW" || targetLang === "zh-CN") &&
     (thaiShortChat || thaiDialect)
   ) {
-    return await translateThaiDialectToChinese(text, targetLang, toneMode);
+    return await translateThaiDialectToChinese(text, targetLang);
   }
 
   let specialHint = "";
@@ -693,7 +620,7 @@ async function translateToTarget(
   }
 
   if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然聊天語氣，不可腦補成回答句。";
+    specialHint += " 這是泰文超短聊天句，可依前文判斷正確意思，但不可擴寫成完整回答句。";
   }
 
   if (mixedZhTh) {
@@ -706,7 +633,7 @@ async function translateToTarget(
   }
 
   if (targetLang === "th") {
-    specialHint += " 請輸出自然泰文聊天用語，不要太書面。";
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
   }
 
   if (targetLang === "zh-TW") {
@@ -720,7 +647,7 @@ async function translateToTarget(
   }
 
   if (targetLang === "en") {
-    specialHint += " 請輸出自然英文聊天語氣。";
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
   }
 
   let output = await askModelTranslate({
@@ -728,7 +655,6 @@ async function translateToTarget(
     targetLang,
     sourceHint: sourceLang,
     specialHint: specialHint.trim(),
-    toneMode,
   });
 
   if (targetLang === "th" && hasChinese(output)) {
@@ -737,7 +663,6 @@ async function translateToTarget(
       targetLang,
       sourceHint: sourceLang,
       specialHint: `${specialHint} 只可輸出純泰文，不可出現中文。`.trim(),
-      toneMode,
     });
   }
 
@@ -750,7 +675,6 @@ async function translateToTarget(
         targetLang,
         sourceHint: sourceLang,
         specialHint: `${specialHint} 只可輸出純中文，不可出現泰文；但若固定術語表指定保留原詞，則可保留該原詞。`.trim(),
-        toneMode,
       });
     }
   }
@@ -765,7 +689,6 @@ async function translateToTarget(
       targetLang,
       sourceHint: sourceLang,
       specialHint: `${specialHint} 只可輸出純英文，不可出現中文或泰文。`.trim(),
-      toneMode,
     });
   }
 
@@ -979,7 +902,6 @@ function buildStatusText(group, plan) {
     `群組上限：${getGroupLimitText(plan)}`,
     `已綁群組：${(plan?.bound_groups || []).length}`,
     `目前語言：${group?.langs?.length ? group.langs.join(", ") : "尚未設定"}`,
-    `語氣模式：${getToneLabel(group?.tone_mode)}`,
     `管理員數量：${group?.admins?.length || 0}`,
     `到期時間：${plan?.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
     `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
@@ -1012,7 +934,6 @@ function buildUserHelpText() {
     "/語言",
     "/我的方案",
     "/我的ID",
-    "/語氣模式",
     "",
     "說明：",
     "新加入：每日免費20句",
@@ -1034,10 +955,6 @@ function buildAdminHelpText(superAdmin) {
     "/價格",
     "/我的ID",
     "/語言選單",
-    "/語氣模式",
-    "/甜聊模式",
-    "/一般模式",
-    "/正式模式",
   ];
 
   if (superAdmin) {
@@ -1146,7 +1063,7 @@ async function initDb() {
 
   await pool.query(`
     ALTER TABLE group_subscriptions
-      ADD COLUMN IF NOT EXISTS tone_mode TEXT NOT NULL DEFAULT '${DEFAULT_TONE_MODE}';
+      ADD COLUMN IF NOT EXISTS tone_mode TEXT NOT NULL DEFAULT 'normal';
   `);
 
   await pool.query(`
@@ -1166,7 +1083,7 @@ async function initDb() {
       source_text TEXT NOT NULL,
       target_lang TEXT NOT NULL,
       source_hint TEXT,
-      tone_mode TEXT NOT NULL DEFAULT '${DEFAULT_TONE_MODE}',
+      tone_mode TEXT NOT NULL DEFAULT 'normal',
       translated_text TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -1182,8 +1099,6 @@ async function getGroup(chatId) {
   );
 
   const row = result.rows[0] || null;
-  if (!row) return null;
-  row.tone_mode = normalizeToneMode(row.tone_mode);
   return row;
 }
 
@@ -1191,10 +1106,10 @@ async function ensureGroupDb(chatId) {
   await pool.query(
     `
     INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins, tone_mode)
-    VALUES ($1, NULL, '[]'::jsonb, '[]'::jsonb, $2)
+    VALUES ($1, NULL, '[]'::jsonb, '[]'::jsonb, 'normal')
     ON CONFLICT (chat_id) DO NOTHING
     `,
-    [chatId, DEFAULT_TONE_MODE]
+    [chatId]
   );
 
   return getGroup(chatId);
@@ -1205,25 +1120,23 @@ async function saveGroup(group) {
   group.admins = Array.isArray(group.admins)
     ? [...new Set(group.admins.filter(Boolean))]
     : [];
-  group.tone_mode = normalizeToneMode(group.tone_mode);
 
   await pool.query(
     `
     INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins, tone_mode)
-    VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+    VALUES ($1, $2, $3::jsonb, $4::jsonb, 'normal')
     ON CONFLICT (chat_id)
     DO UPDATE SET
       owner_id = EXCLUDED.owner_id,
       langs = EXCLUDED.langs,
       admins = EXCLUDED.admins,
-      tone_mode = EXCLUDED.tone_mode
+      tone_mode = 'normal'
     `,
     [
       group.chat_id,
       group.owner_id,
       JSON.stringify(group.langs || []),
       JSON.stringify(group.admins || []),
-      group.tone_mode,
     ]
   );
 }
@@ -1519,7 +1432,6 @@ async function handleFollow(event) {
     group.owner_id = userId;
   }
   addAdmin(group, userId);
-  if (!group.tone_mode) group.tone_mode = DEFAULT_TONE_MODE;
   await saveGroup(group);
 
   let plan = await getPlan(userId);
@@ -1566,7 +1478,6 @@ async function handlePostback(event) {
 
     group.owner_id = userId;
     addAdmin(group, userId);
-    if (!group.tone_mode) group.tone_mode = DEFAULT_TONE_MODE;
     bindGroupToOwner(userPlan, chatId);
 
     if (action === "add_lang" && !group.langs.includes(lang)) {
@@ -1638,9 +1549,6 @@ async function handleCommand(event, rawText) {
   if ((group.admins || []).length === 0 && userId) {
     addAdmin(group, userId);
   }
-  if (!group.tone_mode) {
-    group.tone_mode = DEFAULT_TONE_MODE;
-  }
   await saveGroup(group);
 
   const ownerId = group.owner_id;
@@ -1679,32 +1587,9 @@ async function handleCommand(event, rawText) {
       group.langs.length
         ? `本群語言：${group.langs
             .map((l) => `${LANG_LABELS[l]}(${l})`)
-            .join("、")}\n語氣模式：${getToneLabel(group.tone_mode)}`
-        : `本群尚未設定語言。\n語氣模式：${getToneLabel(group.tone_mode)}`
+            .join("、")}`
+        : `本群尚未設定語言。`
     );
-    return true;
-  }
-
-  if (cmd === "/語氣模式") {
-    await replyText(event.replyToken, `目前語氣模式：${getToneLabel(group.tone_mode)}`);
-    return true;
-  }
-
-  if (cmd === "/甜聊模式" || cmd === "/一般模式" || cmd === "/正式模式") {
-    if (!superAdmin && !canLanguageManage(group, plan, userId)) {
-      await replyText(
-        event.replyToken,
-        "你目前不能切換語氣模式，可能是權限不足或方案已到期。"
-      );
-      return true;
-    }
-
-    if (cmd === "/甜聊模式") group.tone_mode = "sweet";
-    if (cmd === "/一般模式") group.tone_mode = "normal";
-    if (cmd === "/正式模式") group.tone_mode = "formal";
-
-    await saveGroup(group);
-    await replyText(event.replyToken, `已切換為：${getToneLabel(group.tone_mode)}`);
     return true;
   }
 
@@ -1749,7 +1634,7 @@ async function handleCommand(event, rawText) {
     }
     await replyMessages(event.replyToken, [
       buildLanguageMenuFlex(),
-      { type: "text", text: `請加入或移除本群要輸出的語言。\n目前語氣模式：${getToneLabel(group.tone_mode)}` },
+      { type: "text", text: "請加入或移除本群要輸出的語言。" },
     ]);
     return true;
   }
@@ -2073,7 +1958,6 @@ async function handleTextMessage(event) {
   const userId = event.source.userId;
 
   const group = await ensureGroupDb(chatId);
-  const toneMode = normalizeToneMode(group?.tone_mode || DEFAULT_TONE_MODE);
 
   let actingPlan = null;
   let limitUserId = userId;
@@ -2163,7 +2047,7 @@ async function handleTextMessage(event) {
     const results = await Promise.all(
       targetLangs.map(async (lang) => {
         try {
-          const translated = await translateToTarget(text, lang, toneMode);
+          const translated = await translateToTarget(text, lang);
           return safeTranslatedLine(lang, translated);
         } catch (err) {
           console.error(`translate ${lang} error:`, err);
@@ -2201,7 +2085,7 @@ async function handleTextMessage(event) {
   const results = await Promise.all(
     langsToTranslate.map(async (lang) => {
       try {
-        const translated = await translateToTarget(text, lang, toneMode);
+        const translated = await translateToTarget(text, lang);
         return safeTranslatedLine(lang, translated);
       } catch (err) {
         console.error(`translate ${lang} error:`, err);
