@@ -3,6 +3,7 @@ import { Client, middleware } from "@line/bot-sdk";
 import OpenAI from "openai";
 import dotenv from "dotenv";
 import pg from "pg";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -39,7 +40,10 @@ if (missingVars.length > 0) {
 }
 
 const CONTACT_LINE_ID = "aszx88188";
+const GOOGLE_SHEETS_WEBHOOK_URL =
+  "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
+const CACHE_VERSION = "v3";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -51,14 +55,14 @@ const CONTEXT_TYPO_MAP = [
     wrong: "บอท",
     intended: "บอส",
     zh: "老闆",
-    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。"
+    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。",
   },
   {
     wrong: "บอก",
     intended: "บอส",
     zh: "老闆",
-    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。"
-  }
+    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
+  },
 ];
 
 const SUPER_ADMINS = [
@@ -257,7 +261,7 @@ function looksLikeThaiShortChat(text = "") {
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
       t
     )
   );
@@ -269,7 +273,9 @@ function looksLikeThaiDialectText(text = "") {
 
   if (isVeryShortText(t)) return true;
 
-  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
+  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(
+    t
+  );
 }
 
 function looksLikeNamedEntityShortText(text = "") {
@@ -316,13 +322,13 @@ function buildFixedTermsHint(text = "") {
   return [
     "【固定術語表】",
     ...matched.map((item) => `${item.src} => ${item.target}`),
-    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。"
+    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。",
   ].join("\n");
 }
 
 function getMatchedContextTypos(text = "") {
   const t = String(text || "");
-  return CONTEXT_TYPO_MAP.filter(item => t.includes(item.wrong));
+  return CONTEXT_TYPO_MAP.filter((item) => t.includes(item.wrong));
 }
 
 function buildContextTypoHint(text = "") {
@@ -331,9 +337,11 @@ function buildContextTypoHint(text = "") {
 
   return [
     "【情境糾錯規則】",
-    ...matched.map(item => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`),
-    ...matched.map(item => item.hint),
-    "若上下文是在對真人說話，不可翻成機器人。"
+    ...matched.map(
+      (item) => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`
+    ),
+    ...matched.map((item) => item.hint),
+    "若上下文是在對真人說話，不可翻成機器人。",
   ].join("\n");
 }
 
@@ -359,7 +367,11 @@ function safeTranslatedLine(lang, translated) {
 
 function getGroupLimitText(plan) {
   if (!plan) return "未設定";
-  if (plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days") return "不限";
+  if (
+    plan.plan_type === "unlimited_groups" ||
+    plan.plan_type === "trial_7days"
+  )
+    return "不限";
   return String(plan.group_limit ?? "1");
 }
 
@@ -369,7 +381,7 @@ function parsePositiveInt(value, defaultValue = 1) {
   return num;
 }
 
-async function askModelTranslate({
+function buildStablePrompt({
   text,
   targetLang,
   sourceHint = "auto",
@@ -379,35 +391,135 @@ async function askModelTranslate({
   const fixedTermsHint = buildFixedTermsHint(text);
   const contextTypoHint = buildContextTypoHint(text);
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    input: `
-你是專業翻譯機器人，只能翻譯，不可聊天。
+  return `
+【核心翻譯模式】
 
-任務：
-把以下內容翻譯成「${targetName}」。
+你是專業翻譯機器人，只做翻譯，不聊天。
 
-翻譯規則：
-1. 只做翻譯，不可回話
-2. 不可腦補對話、人物關係、情緒
-3. 保留原文語氣，口語就翻口語
-4. 人名、暱稱、店名、地名、公司名、專有名詞、金額、時間，若能確認正式中文，直接使用正式中文
-5. 若無法確認正式中文，但看起來像地名、人名、店名或其他專有名詞，不可直接整段不翻
-6. 查不到正式名稱時，請優先用自然的中文音譯或諧音方式表達，讓讀者可依上下文猜測意思
-7. 音譯後仍要保留整句語意，讓整句能看懂前後文
-8. 不可自行捏造明確但錯誤的正式地名；若無把握，使用偏口語的音譯表達即可
-9. 若原文是短句，請翻成最自然、最常見的聊天說法
-10. 不可加前綴，不可解釋，不可摘要
-11. 不可輸出「好的親愛的、Yes dear、OK honey」這種腦補內容
-12. 原文可能是 LINE 對話、泰國口語、方言、混合語言
-13. 若句意不完整，請忠實翻出最可能意思，但不要擴寫
-14. 只輸出最終翻譯結果
-15. 若固定術語表有指定詞語，必須優先使用，不可改寫
-16. 若原文有常見誤拼、近音字、聊天誤打，必須優先依上下文修正後再翻譯
-17. 在真人聊天情境中，若「บอท / บอก」更可能是誤打的「บอส」，優先翻成「老闆」，不要翻成「機器人」
+翻譯必須：
+✔ 保留原句意思
+✔ 不增加、不刪減內容
+✔ 可依語言習慣做「結構重排」
+✔ 可依上下文判斷正確意思
+✔ 但不可改變語意
+
+--------------------------------
+
+【結構規則（關鍵）】
+
+1. 允許為了符合目標語言（中文）語序進行句子重組
+2. 若直譯會導致語句不自然，必須重排語序
+3. 但不可增加或刪除原文內容
+4. 不可補主詞（我 / 你 / 他）
+5. 不可補客套（謝謝 / 辛苦了）
+
+--------------------------------
+
+【上下文規則（重要）】
+
+1. 可參考前後對話理解意思
+2. 但不可因為上下文而擴寫句子
+3. 上下文只用來避免翻錯意思
+
+例如：
+ไม่ค่ะ
+→ 若前句是詢問 → 翻「不用」
+→ 若是判斷句 → 才翻「不是」
+
+--------------------------------
+
+【聊天語氣詞專殺（重點）】
+
+以下詞「不可原樣輸出」：
+
+ค่ะ / คะ / ครับ / นะ / นะคะ / นะครับ / อ่ะ / อืม
+
+必須轉成中文：
+
+ค่ะ / คะ / ครับ →
+- 好 / 嗯 / 喔
+
+อืม →
+- 嗯 / 喔
+
+นะ / นะคะ →
+- 喔 / 呢
+
+อ่ะ →
+- 啊 / 呀
+
+--------------------------------
+
+【短句翻譯（超重要）】
+
+若句子很短（1~6字）：
+
+👉 優先翻「對話意思」而不是字面
+
+例如：
+
+ค่ะ → 好  
+อืม → 嗯  
+ได้ → 好 / 可以  
+ไม่ → 不要 / 不用 / 不是（依情境）  
+ไม่เอา → 不要  
+ได้ค่ะ → 好  
+ไม่ค่ะ → 不用  
+
+❌ 不可翻：
+- ค่ะ
+- ไม่ค่ะ
+- ได้ค่ะ
+
+--------------------------------
+
+【禁止行為】
+
+❌ 不可逐字死翻  
+❌ 不可亂補內容  
+❌ 不可變禮貌句  
+❌ 不可輸出原文語言  
+❌ 不可讓句子變長  
+
+--------------------------------
+
+【語意優先】
+
+翻譯重點：
+
+👉「讓人看得懂在講什麼」  
+👉 不是逐字對應  
+
+--------------------------------
+
+【特殊句型】
+
+像：
+
+ที่ + 一整句  
+
+👉 這是補充語氣句  
+👉 不要翻成「因為」
+
+要轉為自然中文結構
+
+--------------------------------
+
+【最終要求】
+
+輸出必須：
+
+✔ 簡單  
+✔ 穩定  
+✔ 像真人  
+✔ 不亂加  
+✔ 不漏意思  
+✔ 不混語言  
+
+只輸出翻譯結果
 
 來源語言提示：${sourceHint}
+翻譯模式：正常直譯（禁止改寫）
 補充提示：${specialHint || "無"}
 
 ${fixedTermsHint || ""}
@@ -415,10 +527,103 @@ ${contextTypoHint || ""}
 
 內容：
 ${text}
-    `.trim(),
+  `.trim();
+}
+
+function buildCacheKey({
+  text,
+  targetLang,
+  sourceHint = "auto",
+}) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        CACHE_VERSION,
+        String(sourceHint),
+        String(targetLang),
+        "normal",
+        String(text),
+      ].join("__")
+    )
+    .digest("hex");
+}
+
+async function getTranslationCache({
+  text,
+  targetLang,
+  sourceHint = "auto",
+}) {
+  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  const result = await pool.query(
+    `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
+    [cacheKey]
+  );
+  return result.rows?.[0]?.translated_text || null;
+}
+
+async function saveTranslationCache({
+  text,
+  translatedText,
+  targetLang,
+  sourceHint = "auto",
+}) {
+  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  await pool.query(
+    `
+    INSERT INTO translation_cache (cache_key, source_text, target_lang, source_hint, tone_mode, translated_text)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (cache_key)
+    DO UPDATE SET translated_text = EXCLUDED.translated_text, created_at = NOW()
+    `,
+    [
+      cacheKey,
+      text,
+      targetLang,
+      sourceHint,
+      "normal",
+      translatedText,
+    ]
+  );
+}
+
+async function askModelTranslate({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  specialHint = "",
+}) {
+  const cached = await getTranslationCache({
+    text,
+    targetLang,
+    sourceHint,
+  });
+  if (cached) return cleanupTranslation(cached);
+
+  const prompt = buildStablePrompt({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
   });
 
-  return cleanupTranslation(response.output_text || "");
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    temperature: 0.2,
+    input: prompt,
+  });
+
+  const output = cleanupTranslation(response.output_text || "");
+  if (output) {
+    await saveTranslationCache({
+      text,
+      translatedText: output,
+      targetLang,
+      sourceHint,
+    });
+  }
+
+  return output;
 }
 
 async function verifyPlaceNameOnline(text) {
@@ -430,7 +635,10 @@ async function verifyPlaceNameOnline(text) {
   };
 }
 
-async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
+async function translateThaiDialectToChinese(
+  text,
+  targetLang = "zh-TW"
+) {
   const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
@@ -447,7 +655,11 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 若碰到無法確認正式中文的地名、人名、店名：
 - 若固定術語表已指定，必須照固定術語表
 - 若未指定，才可用中文諧音或音譯呈現
-${allowOriginalTerm ? "若固定術語表指定保留原詞，可保留該原詞。" : `目標語言必須是純${targetName}。`}
+${
+  allowOriginalTerm
+    ? "若固定術語表指定保留原詞，可保留該原詞。"
+    : `目標語言必須是純${targetName}。`
+}
     `.trim(),
   });
 }
@@ -461,14 +673,20 @@ async function translateToTarget(text, targetLang) {
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && possiblePlaceName) {
+  if (
+    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
+    possiblePlaceName
+  ) {
     const verified = await verifyPlaceNameOnline(text);
     if (verified?.found && verified?.zhName && verified.confidence >= 0.85) {
       return verified.zhName;
     }
   }
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
+  if (
+    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
+    (thaiShortChat || thaiDialect)
+  ) {
     return await translateThaiDialectToChinese(text, targetLang);
   }
 
@@ -479,7 +697,7 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然聊天語氣，不可腦補成回答句。";
+    specialHint += " 這是泰文超短聊天句，可依前文判斷正確意思，但不可擴寫成完整回答句。";
   }
 
   if (mixedZhTh) {
@@ -487,23 +705,26 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (namedEntityShort) {
-    specialHint += " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
   }
 
   if (targetLang === "th") {
-    specialHint += " 請輸出自然泰文聊天用語，不要太書面。";
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
   }
 
   if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint +=
+      " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint +=
+      " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
   }
 
   if (targetLang === "en") {
-    specialHint += " 請輸出自然英文聊天語氣。";
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
   }
 
   let output = await askModelTranslate({
@@ -535,7 +756,11 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  if (targetLang === "en" && /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) && !/[A-Za-z]/.test(output)) {
+  if (
+    targetLang === "en" &&
+    /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) &&
+    !/[A-Za-z]/.test(output)
+  ) {
     output = await askModelTranslate({
       text,
       targetLang,
@@ -788,8 +1013,10 @@ function buildUserHelpText() {
     "/我的ID",
     "",
     "說明：",
-    "新加入可先使用每日免費20句",
-    "7天試用請聯絡管理員開通",
+    "新加入：每日免費20句",
+    "試用7天：不限群組 / 不限句數",
+    "1群 / 月：500",
+    "不限群 / 月：1500",
     `續費請聯絡 LINE：${CONTACT_LINE_ID}`,
   ].join("\n");
 }
@@ -811,22 +1038,17 @@ function buildAdminHelpText(superAdmin) {
     lines.push(
       "/綁定",
       "/解除綁定",
-      "/1群方案",
-      "/3群方案",
-      "/5群方案",
-      "/開通不限30",
-      "/開通不限90",
       "/新增管理員 使用者ID",
       "/刪除管理員 使用者ID",
       "/設定擁有者 使用者ID",
       "/開通1群 使用者ID",
-      "/開通3群 使用者ID",
-      "/開通5群 使用者ID",
+      "/開通不限30 使用者ID",
       "/試用7天 使用者ID",
       "/查方案 使用者ID",
       "/停用 使用者ID",
       "/全部會員 [頁數]",
-      "/會員列表 [頁數]"
+      "/會員列表 [頁數]",
+      "/同步全部會員"
     );
   }
 
@@ -917,6 +1139,11 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE group_subscriptions
+      ADD COLUMN IF NOT EXISTS tone_mode TEXT NOT NULL DEFAULT 'normal';
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS usage_logs (
       id SERIAL PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -926,23 +1153,37 @@ async function initDb() {
       UNIQUE(user_id, group_id, date)
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS translation_cache (
+      cache_key TEXT PRIMARY KEY,
+      source_text TEXT NOT NULL,
+      target_lang TEXT NOT NULL,
+      source_hint TEXT,
+      tone_mode TEXT NOT NULL DEFAULT 'normal',
+      translated_text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }
 
 async function getGroup(chatId) {
   const result = await pool.query(
-    `SELECT chat_id, owner_id, langs, admins, created_at
+    `SELECT chat_id, owner_id, langs, admins, tone_mode, created_at
      FROM group_subscriptions
      WHERE chat_id = $1`,
     [chatId]
   );
-  return result.rows[0] || null;
+
+  const row = result.rows[0] || null;
+  return row;
 }
 
 async function ensureGroupDb(chatId) {
   await pool.query(
     `
-    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins)
-    VALUES ($1, NULL, '[]'::jsonb, '[]'::jsonb)
+    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins, tone_mode)
+    VALUES ($1, NULL, '[]'::jsonb, '[]'::jsonb, 'normal')
     ON CONFLICT (chat_id) DO NOTHING
     `,
     [chatId]
@@ -953,17 +1194,20 @@ async function ensureGroupDb(chatId) {
 
 async function saveGroup(group) {
   group.langs = normalizeLangList(group.langs || []);
-  group.admins = Array.isArray(group.admins) ? [...new Set(group.admins.filter(Boolean))] : [];
+  group.admins = Array.isArray(group.admins)
+    ? [...new Set(group.admins.filter(Boolean))]
+    : [];
 
   await pool.query(
     `
-    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins)
-    VALUES ($1, $2, $3::jsonb, $4::jsonb)
+    INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins, tone_mode)
+    VALUES ($1, $2, $3::jsonb, $4::jsonb, 'normal')
     ON CONFLICT (chat_id)
     DO UPDATE SET
       owner_id = EXCLUDED.owner_id,
       langs = EXCLUDED.langs,
-      admins = EXCLUDED.admins
+      admins = EXCLUDED.admins,
+      tone_mode = 'normal'
     `,
     [
       group.chat_id,
@@ -1016,11 +1260,67 @@ async function savePlan(plan) {
       plan.plan_type,
       plan.group_limit,
       plan.vip_expires_at,
-      JSON.stringify(Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []),
+      JSON.stringify(
+        Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []
+      ),
       plan.daily_limit ?? null,
       plan.trial_type ?? null,
     ]
   );
+}
+
+function getNowTaipeiString() {
+  return new Date().toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour12: false,
+  });
+}
+
+async function syncMemberToGoogleSheet({
+  userId,
+  memberName = "",
+  lineDisplayName = "",
+  lineCustomId = "",
+  note = "",
+  openedAt = "",
+} = {}) {
+  try {
+    if (!GOOGLE_SHEETS_WEBHOOK_URL || !userId) return;
+
+    const plan = await getPlan(userId);
+    if (!plan) return;
+
+    const payload = {
+      userId,
+      memberName,
+      lineDisplayName,
+      lineCustomId,
+      planType: plan.plan_type || "",
+      trialType: plan.trial_type || "",
+      groupLimit:
+        plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
+          ? "不限"
+          : String(plan.group_limit ?? "1"),
+      boundGroupCount: Array.isArray(plan.bound_groups)
+        ? plan.bound_groups.length
+        : 0,
+      openedAt: openedAt || getNowTaipeiString(),
+      expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
+      vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
+      note,
+    };
+
+    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("syncMemberToGoogleSheet error =", err);
+    if (err?.stack) console.error(err.stack);
+  }
 }
 
 async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
@@ -1052,6 +1352,20 @@ async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
     pageSize: safePageSize,
     totalPages: Math.max(1, Math.ceil(total / safePageSize)),
   };
+}
+
+async function getAllPlansNoPaging() {
+  const result = await pool.query(`
+    SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type, created_at
+    FROM plans
+    ORDER BY
+      CASE WHEN vip_expires_at IS NULL THEN 1 ELSE 0 END,
+      vip_expires_at DESC NULLS LAST,
+      created_at DESC,
+      user_id ASC
+  `);
+
+  return result.rows || [];
 }
 
 async function checkDailyLimit(userId, groupId, dailyLimit) {
@@ -1131,7 +1445,9 @@ function createPaidPlanObject(userId, planType, groupLimit, days, oldPlan = null
     plan_type: planType,
     group_limit: groupLimit,
     vip_expires_at: addDays(days),
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
     daily_limit: null,
     trial_type: null,
   };
@@ -1143,7 +1459,9 @@ function createFreeTrialPlanObject(userId, oldPlan = null) {
     plan_type: "free_trial",
     group_limit: 1,
     vip_expires_at: null,
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)].slice(0, 1)
+      : [],
     daily_limit: 20,
     trial_type: "每日免費20句",
   };
@@ -1155,9 +1473,11 @@ function create7DayTrialPlanObject(userId, oldPlan = null) {
     plan_type: "trial_7days",
     group_limit: null,
     vip_expires_at: addDays(7),
-    bound_groups: Array.isArray(oldPlan?.bound_groups) ? [...new Set(oldPlan.bound_groups)] : [],
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
     daily_limit: null,
-    trial_type: "7天試用不限群組",
+    trial_type: "7天試用不限群組不限句數",
   };
 }
 
@@ -1254,7 +1574,10 @@ async function handlePostback(event) {
   const ownerPlan = await getPlan(group.owner_id);
 
   if (!isSuperAdmin(userId) && !canLanguageManage(group, ownerPlan, userId)) {
-    await replyText(event.replyToken, "只有此群的授權管理人可以設定語言，或方案可能已到期。");
+    await replyText(
+      event.replyToken,
+      "只有此群的授權管理人可以設定語言，或方案可能已到期。"
+    );
     return;
   }
 
@@ -1276,7 +1599,9 @@ async function handlePostback(event) {
     await saveGroup(group);
     await replyText(
       event.replyToken,
-      `已移除語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${group.langs.length ? group.langs.join(", ") : "無"}`
+      `已移除語言：${LANG_LABELS[lang]} (${lang})\n目前語言：${
+        group.langs.length ? group.langs.join(", ") : "無"
+      }`
     );
     return;
   }
@@ -1337,8 +1662,10 @@ async function handleCommand(event, rawText) {
     await replyText(
       event.replyToken,
       group.langs.length
-        ? `本群語言：${group.langs.map((l) => `${LANG_LABELS[l]}(${l})`).join("、")}`
-        : "本群尚未設定語言。"
+        ? `本群語言：${group.langs
+            .map((l) => `${LANG_LABELS[l]}(${l})`)
+            .join("、")}`
+        : `本群尚未設定語言。`
     );
     return true;
   }
@@ -1358,9 +1685,10 @@ async function handleCommand(event, rawText) {
       event.replyToken,
       [
         "翻譯機器人方案",
-        "新加入可每日免費20句",
-        "可指定開通 7天試用不限群組",
-        "正式方案請聯絡管理員",
+        "新加入：每日免費20句",
+        "試用7天：不限群組 / 不限句數",
+        "1群 / 月：500",
+        "不限群 / 月：1500",
         "",
         `詳情與開通請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
       ].join("\n")
@@ -1375,7 +1703,10 @@ async function handleCommand(event, rawText) {
 
   if (cmd === "/menu" || cmd === "/語言選單") {
     if (!superAdmin && !canLanguageManage(group, plan, userId)) {
-      await replyText(event.replyToken, "你目前不能設定語言，可能是權限不足或方案已到期。");
+      await replyText(
+        event.replyToken,
+        "你目前不能設定語言，可能是權限不足或方案已到期。"
+      );
       return true;
     }
     await replyMessages(event.replyToken, [
@@ -1395,12 +1726,43 @@ async function handleCommand(event, rawText) {
     const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
 
     if (page > result.totalPages && result.total > 0) {
-      await replyText(event.replyToken, `頁數超出範圍，目前只有 ${result.totalPages} 頁。`);
+      await replyText(
+        event.replyToken,
+        `頁數超出範圍，目前只有 ${result.totalPages} 頁。`
+      );
       return true;
     }
 
-    const textResult = buildAllPlansText(result.rows, result.page, result.totalPages, result.total);
-    await replyText(event.replyToken, textResult);
+    await replyText(
+      event.replyToken,
+      buildAllPlansText(result.rows, result.page, result.totalPages, result.total)
+    );
+    return true;
+  }
+
+  if (cmd === "/同步全部會員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const allPlans = await getAllPlansNoPaging();
+
+    if (!allPlans.length) {
+      await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
+      return true;
+    }
+
+    let successCount = 0;
+    for (const planItem of allPlans) {
+      await syncMemberToGoogleSheet({ userId: planItem.user_id });
+      successCount += 1;
+    }
+
+    await replyText(
+      event.replyToken,
+      `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`
+    );
     return true;
   }
 
@@ -1423,14 +1785,20 @@ async function handleCommand(event, rawText) {
     }
 
     if (!canUseGroup(currentPlan, chatId)) {
-      await replyText(event.replyToken, "此方案的群組數量已滿，無法再綁定新群。");
+      await replyText(
+        event.replyToken,
+        "此方案的群組數量已滿，無法再綁定新群。"
+      );
       return true;
     }
 
     bindGroupToOwner(currentPlan, chatId);
     await savePlan(currentPlan);
 
-    await replyText(event.replyToken, `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`);
+    await replyText(
+      event.replyToken,
+      `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`
+    );
     return true;
   }
 
@@ -1453,113 +1821,6 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/plan1" || cmd === "/1群方案") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!ownerId) {
-      await replyText(event.replyToken, "本群尚未設定 owner。");
-      return true;
-    }
-
-    const oldPlan = await getPlan(ownerId);
-    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 1, 30, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(event.replyToken, `已開通 1 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
-    return true;
-  }
-
-  if (cmd === "/plan3" || cmd === "/3群方案") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!ownerId) {
-      await replyText(event.replyToken, "本群尚未設定 owner。");
-      return true;
-    }
-
-    const oldPlan = await getPlan(ownerId);
-    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 3, 30, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(event.replyToken, `已開通 3 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
-    return true;
-  }
-
-  if (cmd === "/plan5" || cmd === "/5群方案") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!ownerId) {
-      await replyText(event.replyToken, "本群尚未設定 owner。");
-      return true;
-    }
-
-    const oldPlan = await getPlan(ownerId);
-    const nextPlan = createPaidPlanObject(ownerId, "limited_groups", 5, 30, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(event.replyToken, `已開通 5 群 / 30 天\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
-    return true;
-  }
-
-  if (cmd === "/planu30" || cmd === "/開通不限30") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!ownerId && !arg) {
-      await replyText(event.replyToken, "本群尚未設定 owner，或用法：/開通不限30 使用者ID");
-      return true;
-    }
-
-    if (arg) {
-      const oldPlan = await getPlan(arg);
-      const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
-      await savePlan(nextPlan);
-
-      await replyText(
-        event.replyToken,
-        `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
-      );
-      return true;
-    }
-
-    const oldPlan = await getPlan(ownerId);
-    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(event.replyToken, `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
-    return true;
-  }
-
-  if (cmd === "/planu90" || cmd === "/開通不限90") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!ownerId) {
-      await replyText(event.replyToken, "本群尚未設定 owner。");
-      return true;
-    }
-
-    const oldPlan = await getPlan(ownerId);
-    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 90, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(event.replyToken, `已開通 90 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`);
-    return true;
-  }
-
   if (cmd === "/setadmin" || cmd === "/新增管理員") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
@@ -1573,7 +1834,6 @@ async function handleCommand(event, rawText) {
 
     addAdmin(group, arg);
     await saveGroup(group);
-
     await replyText(event.replyToken, `已新增管理員：${arg}`);
     return true;
   }
@@ -1596,7 +1856,6 @@ async function handleCommand(event, rawText) {
 
     removeAdmin(group, arg);
     await saveGroup(group);
-
     await replyText(event.replyToken, `已移除管理員：${arg}`);
     return true;
   }
@@ -1640,6 +1899,10 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -1648,46 +1911,47 @@ async function handleCommand(event, rawText) {
     return true;
   }
 
-  if (cmd === "/開通3群") {
+  if (cmd === "/planu30" || cmd === "/開通不限30") {
     if (!superAdmin) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
 
-    if (!arg) {
-      await replyText(event.replyToken, "用法：/開通3群 使用者ID");
+    if (!ownerId && !arg) {
+      await replyText(
+        event.replyToken,
+        "本群尚未設定 owner，或用法：/開通不限30 使用者ID"
+      );
       return true;
     }
 
-    const oldPlan = await getPlan(arg);
-    const nextPlan = createPaidPlanObject(arg, "limited_groups", 3, 30, oldPlan);
+    if (arg) {
+      const oldPlan = await getPlan(arg);
+      const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
+      await savePlan(nextPlan);
+      await syncMemberToGoogleSheet({
+        userId: arg,
+        openedAt: getNowTaipeiString(),
+      });
+
+      await replyText(
+        event.replyToken,
+        `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      );
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: ownerId,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
-      `已開通 3群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
-    );
-    return true;
-  }
-
-  if (cmd === "/開通5群") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!arg) {
-      await replyText(event.replyToken, "用法：/開通5群 使用者ID");
-      return true;
-    }
-
-    const oldPlan = await getPlan(arg);
-    const nextPlan = createPaidPlanObject(arg, "limited_groups", 5, 30, oldPlan);
-    await savePlan(nextPlan);
-
-    await replyText(
-      event.replyToken,
-      `已開通 5群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -1706,10 +1970,14 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
     await savePlan(nextPlan);
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
-      `已開通 7天試用（不限群組）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 7天試用（不限群組 / 不限句數）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -1744,6 +2012,7 @@ async function handleCommand(event, rawText) {
     const current = await getPlan(arg);
     const disabled = disablePlanObject(current, arg);
     await savePlan(disabled);
+    await syncMemberToGoogleSheet({ userId: arg });
 
     await replyText(event.replyToken, `已停用方案：${arg}`);
     return true;
@@ -1816,7 +2085,11 @@ async function handleTextMessage(event) {
   }
 
   if (actingPlan.daily_limit) {
-    const limitResult = await checkDailyLimit(limitUserId, chatId, actingPlan.daily_limit);
+    const limitResult = await checkDailyLimit(
+      limitUserId,
+      chatId,
+      actingPlan.daily_limit
+    );
 
     if (!limitResult.allowed) {
       await replyText(
