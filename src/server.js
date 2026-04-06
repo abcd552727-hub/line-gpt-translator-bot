@@ -43,7 +43,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -131,6 +131,26 @@ function formatDateTime(dateString) {
     timeZone: "Asia/Taipei",
     hour12: false,
   });
+}
+
+function getPlanTypeLabel(planType, groupLimit = null) {
+  switch (planType) {
+    case "free_trial":
+      return "免費試用";
+    case "trial_7days":
+      return "7天試用";
+    case "limited_groups":
+      return groupLimit ? `${groupLimit}群方案` : "限制群組方案";
+    case "unlimited_groups":
+      return "不限群組方案";
+    default:
+      return planType || "未開通";
+  }
+}
+
+function getPlanDisplayLabel(plan) {
+  if (!plan) return "未開通";
+  return getPlanTypeLabel(plan.plan_type, plan.group_limit);
 }
 
 function isPlanActive(plan) {
@@ -249,6 +269,10 @@ function cleanupTranslation(text = "") {
     .trim();
 }
 
+function isSameText(a = "", b = "") {
+  return cleanupTranslation(a) === cleanupTranslation(b);
+}
+
 function isVeryShortText(text = "") {
   const cleaned = String(text || "").trim().replace(/\s+/g, "");
   return cleaned.length > 0 && cleaned.length <= 14;
@@ -261,7 +285,7 @@ function looksLikeThaiShortChat(text = "") {
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|不|ไม่ครับ|ไม่เอา|เอา)$/.test(
       t
     )
   );
@@ -359,10 +383,15 @@ function normalizeLangList(langs = []) {
   return result;
 }
 
-function safeTranslatedLine(lang, translated) {
+function safeTranslatedLine(lang, translated, options = {}) {
   const clean = cleanupTranslation(translated);
   if (!clean) return null;
-  return `[${lang}] ${clean}`;
+
+  if (options.original) {
+    return `【${LANG_LABELS[lang] || lang}｜原文】\n${clean}`;
+  }
+
+  return `【${LANG_LABELS[lang] || lang}】\n${clean}`;
 }
 
 function getGroupLimitText(plan) {
@@ -392,134 +421,21 @@ function buildStablePrompt({
   const contextTypoHint = buildContextTypoHint(text);
 
   return `
-【核心翻譯模式】
-
 你是專業翻譯機器人，只做翻譯，不聊天。
 
-翻譯必須：
-✔ 保留原句意思
-✔ 不增加、不刪減內容
-✔ 可依語言習慣做「結構重排」
-✔ 可依上下文判斷正確意思
-✔ 但不可改變語意
+請把下面內容翻成「${targetName}」。
+只輸出翻譯結果，不可解釋，不可加前綴，不可補充說明。
 
---------------------------------
-
-【結構規則（關鍵）】
-
-1. 允許為了符合目標語言（中文）語序進行句子重組
-2. 若直譯會導致語句不自然，必須重排語序
-3. 但不可增加或刪除原文內容
-4. 不可補主詞（我 / 你 / 他）
-5. 不可補客套（謝謝 / 辛苦了）
-
---------------------------------
-
-【上下文規則（重要）】
-
-1. 可參考前後對話理解意思
-2. 但不可因為上下文而擴寫句子
-3. 上下文只用來避免翻錯意思
-
-例如：
-ไม่ค่ะ
-→ 若前句是詢問 → 翻「不用」
-→ 若是判斷句 → 才翻「不是」
-
---------------------------------
-
-【聊天語氣詞專殺（重點）】
-
-以下詞「不可原樣輸出」：
-
-ค่ะ / คะ / ครับ / นะ / นะคะ / นะครับ / อ่ะ / อืม
-
-必須轉成中文：
-
-ค่ะ / คะ / ครับ →
-- 好 / 嗯 / 喔
-
-อืม →
-- 嗯 / 喔
-
-นะ / นะคะ →
-- 喔 / 呢
-
-อ่ะ →
-- 啊 / 呀
-
---------------------------------
-
-【短句翻譯（超重要）】
-
-若句子很短（1~6字）：
-
-👉 優先翻「對話意思」而不是字面
-
-例如：
-
-ค่ะ → 好  
-อืม → 嗯  
-ได้ → 好 / 可以  
-ไม่ → 不要 / 不用 / 不是（依情境）  
-ไม่เอา → 不要  
-ได้ค่ะ → 好  
-ไม่ค่ะ → 不用  
-
-❌ 不可翻：
-- ค่ะ
-- ไม่ค่ะ
-- ได้ค่ะ
-
---------------------------------
-
-【禁止行為】
-
-❌ 不可逐字死翻  
-❌ 不可亂補內容  
-❌ 不可變禮貌句  
-❌ 不可輸出原文語言  
-❌ 不可讓句子變長  
-
---------------------------------
-
-【語意優先】
-
-翻譯重點：
-
-👉「讓人看得懂在講什麼」  
-👉 不是逐字對應  
-
---------------------------------
-
-【特殊句型】
-
-像：
-
-ที่ + 一整句  
-
-👉 這是補充語氣句  
-👉 不要翻成「因為」
-
-要轉為自然中文結構
-
---------------------------------
-
-【最終要求】
-
-輸出必須：
-
-✔ 簡單  
-✔ 穩定  
-✔ 像真人  
-✔ 不亂加  
-✔ 不漏意思  
-✔ 不混語言  
-
-只輸出翻譯結果
+翻譯規則：
+1. 保留原意，不增加、不刪減內容
+2. 可依目標語言自然重排語序
+3. 短句、聊天句要翻對話意思，不要逐字死翻
+4. 若來源語言與目標語言不同，不可原樣照抄原文
+5. 若有固定術語，必須照固定術語表使用
+6. 若上下文可幫助理解，只能用來避免翻錯，不可擴寫
 
 來源語言提示：${sourceHint}
-翻譯模式：正常直譯（禁止改寫）
+目標語言：${targetName}
 補充提示：${specialHint || "無"}
 
 ${fixedTermsHint || ""}
@@ -534,6 +450,7 @@ function buildCacheKey({
   text,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
   return crypto
     .createHash("sha1")
@@ -543,6 +460,7 @@ function buildCacheKey({
         String(sourceHint),
         String(targetLang),
         "normal",
+        String(specialHint),
         String(text),
       ].join("__")
     )
@@ -553,12 +471,20 @@ async function getTranslationCache({
   text,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
+
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
     [cacheKey]
   );
+
   return result.rows?.[0]?.translated_text || null;
 }
 
@@ -567,8 +493,15 @@ async function saveTranslationCache({
   translatedText,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
+
   await pool.query(
     `
     INSERT INTO translation_cache (cache_key, source_text, target_lang, source_hint, tone_mode, translated_text)
@@ -597,6 +530,7 @@ async function askModelTranslate({
     text,
     targetLang,
     sourceHint,
+    specialHint,
   });
   if (cached) return cleanupTranslation(cached);
 
@@ -614,12 +548,14 @@ async function askModelTranslate({
   });
 
   const output = cleanupTranslation(response.output_text || "");
+
   if (output) {
     await saveTranslationCache({
       text,
       translatedText: output,
       targetLang,
       sourceHint,
+      specialHint,
     });
   }
 
@@ -635,10 +571,7 @@ async function verifyPlaceNameOnline(text) {
   };
 }
 
-async function translateThaiDialectToChinese(
-  text,
-  targetLang = "zh-TW"
-) {
+async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
   const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
@@ -672,6 +605,8 @@ async function translateToTarget(text, targetLang) {
   const namedEntityShort = looksLikeNamedEntityShortText(text);
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
+  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
+  const targetName = getLangPureName(targetLang);
 
   if (
     (targetLang === "zh-TW" || targetLang === "zh-CN") &&
@@ -706,7 +641,7 @@ async function translateToTarget(text, targetLang) {
 
   if (namedEntityShort) {
     specialHint +=
-      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用中文可讀諧音或音譯表達，並保留整句可理解的語意。";
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
   }
 
   if (targetLang === "th") {
@@ -714,45 +649,52 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (targetLang === "zh-TW") {
-    specialHint +=
-      " 請輸出自然繁體中文，不要中國式生硬書面句。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
   }
 
   if (targetLang === "zh-CN") {
-    specialHint +=
-      " 請輸出自然简体中文。若遇到疑似地名、人名、店名但查不到正式中文，優先遵守固定術語表；若固定術語表未指定，再考慮中文諧音或音譯。";
+    specialHint += " 請輸出自然简体中文。";
   }
 
   if (targetLang === "en") {
     specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
   }
 
-  let output = await askModelTranslate({
-    text,
-    targetLang,
-    sourceHint: sourceLang,
-    specialHint: specialHint.trim(),
-  });
-
-  if (targetLang === "th" && hasChinese(output)) {
-    output = await askModelTranslate({
+  const askOnce = async (extraHint = "") => {
+    return await askModelTranslate({
       text,
       targetLang,
       sourceHint: sourceLang,
-      specialHint: `${specialHint} 只可輸出純泰文，不可出現中文。`.trim(),
+      specialHint: `${specialHint} ${extraHint}`.trim(),
     });
+  };
+
+  let output = await askOnce();
+  const normalizedInput = cleanupTranslation(text);
+
+  const shouldRetrySameAsInput = (value) => {
+    const clean = cleanupTranslation(value);
+    if (!clean) return false;
+    if (sourceLang === targetLang) return false;
+    if (allowOriginalTerm) return false;
+    return clean === normalizedInput;
+  };
+
+  if (shouldRetrySameAsInput(output)) {
+    output = await askOnce(
+      `這次必須真正翻成${targetName}，不可原樣輸出來源文字，不可照抄原文。`
+    );
+  }
+
+  if (targetLang === "th" && hasChinese(output)) {
+    output = await askOnce("只可輸出純泰文，不可出現中文。");
   }
 
   if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(output)) {
-    const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
-
     if (!allowOriginalTerm) {
-      output = await askModelTranslate({
-        text,
-        targetLang,
-        sourceHint: sourceLang,
-        specialHint: `${specialHint} 只可輸出純中文，不可出現泰文；但若固定術語表指定保留原詞，則可保留該原詞。`.trim(),
-      });
+      output = await askOnce(
+        "只可輸出純中文，不可出現泰文；但若固定術語表指定保留原詞，則可保留該原詞。"
+      );
     }
   }
 
@@ -761,12 +703,11 @@ async function translateToTarget(text, targetLang) {
     /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) &&
     !/[A-Za-z]/.test(output)
   ) {
-    output = await askModelTranslate({
-      text,
-      targetLang,
-      sourceHint: sourceLang,
-      specialHint: `${specialHint} 只可輸出純英文，不可出現中文或泰文。`.trim(),
-    });
+    output = await askOnce("只可輸出純英文，不可出現中文或泰文。");
+  }
+
+  if (shouldRetrySameAsInput(output)) {
+    output = await askOnce(`再次提醒：不可原樣輸出原文，必須翻成${targetName}。`);
   }
 
   return cleanupTranslation(output);
@@ -973,7 +914,7 @@ function buildLanguageMenuFlex() {
 function buildStatusText(group, plan) {
   return [
     `ownerId：${group?.owner_id || "未綁定"}`,
-    `方案：${plan?.plan_type || "未開通"}`,
+    `方案：${getPlanDisplayLabel(plan)}`,
     `試用類型：${plan?.trial_type || "無"}`,
     `每日上限：${plan?.daily_limit ?? "不限"}`,
     `群組上限：${getGroupLimitText(plan)}`,
@@ -992,7 +933,7 @@ function buildPlanText(userId, plan) {
 
   return [
     `使用者：${userId}`,
-    `方案：${plan.plan_type}`,
+    `方案：${getPlanDisplayLabel(plan)}`,
     `試用類型：${plan.trial_type || "無"}`,
     `每日上限：${plan.daily_limit ?? "不限"}`,
     `群組上限：${getGroupLimitText(plan)}`,
@@ -1032,6 +973,7 @@ function buildAdminHelpText(superAdmin) {
     "/價格",
     "/我的ID",
     "/語言選單",
+    "/重設語言",
   ];
 
   if (superAdmin) {
@@ -1069,7 +1011,7 @@ function buildAllPlansText(plans = [], page = 1, totalPages = 1, totalCount = 0)
     lines.push(
       [
         `使用者：${plan.user_id}`,
-        `方案：${plan.plan_type || "未開通"}`,
+        `方案：${getPlanDisplayLabel(plan)}`,
         `試用類型：${plan.trial_type || "無"}`,
         `每日上限：${plan.daily_limit ?? "不限"}`,
         `群組上限：${getGroupLimitText(plan)}`,
@@ -1165,6 +1107,16 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS member_profiles (
+      user_id TEXT PRIMARY KEY,
+      display_name TEXT,
+      picture_url TEXT,
+      status_message TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }
 
 async function getGroup(chatId) {
@@ -1175,8 +1127,7 @@ async function getGroup(chatId) {
     [chatId]
   );
 
-  const row = result.rows[0] || null;
-  return row;
+  return result.rows[0] || null;
 }
 
 async function ensureGroupDb(chatId) {
@@ -1269,6 +1220,134 @@ async function savePlan(plan) {
   );
 }
 
+async function getMemberProfileDb(userId) {
+  if (!userId) return null;
+  const result = await pool.query(
+    `SELECT user_id, display_name, picture_url, status_message, updated_at
+     FROM member_profiles
+     WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
+async function saveMemberProfileDb({
+  user_id,
+  display_name = "",
+  picture_url = "",
+  status_message = "",
+}) {
+  if (!user_id) return;
+
+  await pool.query(
+    `
+    INSERT INTO member_profiles (user_id, display_name, picture_url, status_message, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (user_id)
+    DO UPDATE SET
+      display_name = EXCLUDED.display_name,
+      picture_url = EXCLUDED.picture_url,
+      status_message = EXCLUDED.status_message,
+      updated_at = NOW()
+    `,
+    [user_id, display_name, picture_url, status_message]
+  );
+}
+
+async function fetchUserProfileFromApiByUserId(userId) {
+  if (!userId) return null;
+  try {
+    const p = await lineClient.getProfile(userId);
+    return {
+      user_id: userId,
+      display_name: p?.displayName || "",
+      picture_url: p?.pictureUrl || "",
+      status_message: p?.statusMessage || "",
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+async function fetchUserProfileFromEvent(event) {
+  const userId = event?.source?.userId;
+  if (!userId) return null;
+
+  try {
+    if (event.source.groupId) {
+      const p = await lineClient.getGroupMemberProfile(event.source.groupId, userId);
+      return {
+        user_id: userId,
+        display_name: p?.displayName || "",
+        picture_url: p?.pictureUrl || "",
+        status_message: p?.statusMessage || "",
+      };
+    }
+
+    if (event.source.roomId) {
+      const p = await lineClient.getRoomMemberProfile(event.source.roomId, userId);
+      return {
+        user_id: userId,
+        display_name: p?.displayName || "",
+        picture_url: p?.pictureUrl || "",
+        status_message: p?.statusMessage || "",
+      };
+    }
+
+    const p = await lineClient.getProfile(userId);
+    return {
+      user_id: userId,
+      display_name: p?.displayName || "",
+      picture_url: p?.pictureUrl || "",
+      status_message: p?.statusMessage || "",
+    };
+  } catch (err) {
+    const fallback = await fetchUserProfileFromApiByUserId(userId);
+    return fallback;
+  }
+}
+
+async function captureEventUserProfile(event, { force = false } = {}) {
+  const userId = event?.source?.userId;
+  if (!userId) return null;
+
+  if (!force) {
+    const stored = await getMemberProfileDb(userId);
+    if (stored?.display_name) return stored;
+  }
+
+  const profile = await fetchUserProfileFromEvent(event);
+  if (profile?.display_name) {
+    await saveMemberProfileDb(profile);
+  }
+  return profile;
+}
+
+async function resolveLineDisplayName({
+  userId,
+  event = null,
+  lineDisplayName = "",
+}) {
+  if (lineDisplayName) return lineDisplayName;
+  if (!userId) return "";
+
+  if (event?.source?.userId === userId) {
+    const eventProfile = await captureEventUserProfile(event);
+    if (eventProfile?.display_name) return eventProfile.display_name;
+  }
+
+  const stored = await getMemberProfileDb(userId);
+  if (stored?.display_name) return stored.display_name;
+
+  const fetched = await fetchUserProfileFromApiByUserId(userId);
+  if (fetched?.display_name) {
+    await saveMemberProfileDb(fetched);
+    return fetched.display_name;
+  }
+
+  return "";
+}
+
 function getNowTaipeiString() {
   return new Date().toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -1278,6 +1357,7 @@ function getNowTaipeiString() {
 
 async function syncMemberToGoogleSheet({
   userId,
+  event = null,
   memberName = "",
   lineDisplayName = "",
   lineCustomId = "",
@@ -1290,12 +1370,19 @@ async function syncMemberToGoogleSheet({
     const plan = await getPlan(userId);
     if (!plan) return;
 
+    const resolvedDisplayName = await resolveLineDisplayName({
+      userId,
+      event,
+      lineDisplayName,
+    });
+
     const payload = {
       userId,
-      memberName,
-      lineDisplayName,
+      memberName: memberName || resolvedDisplayName || "",
+      lineDisplayName: resolvedDisplayName || "",
       lineCustomId,
-      planType: plan.plan_type || "",
+      planType: getPlanDisplayLabel(plan),
+      planCode: plan.plan_type || "",
       trialType: plan.trial_type || "",
       groupLimit:
         plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
@@ -1310,13 +1397,17 @@ async function syncMemberToGoogleSheet({
       note,
     };
 
-    await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+    const resp = await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
     });
+
+    if (!resp.ok) {
+      throw new Error(`Google Sheets webhook failed: ${resp.status}`);
+    }
   } catch (err) {
     console.error("syncMemberToGoogleSheet error =", err);
     if (err?.stack) console.error(err.stack);
@@ -1617,16 +1708,19 @@ async function handleCommand(event, rawText) {
 
   const chatId = getChatId(event);
   const userId = event.source.userId;
+  const chatType = getChatType(event);
 
   const group = await ensureGroupDb(chatId);
 
-  if (!group.owner_id && userId) {
-    group.owner_id = userId;
+  if (chatType === "user") {
+    if (!group.owner_id && userId) {
+      group.owner_id = userId;
+    }
+    if ((group.admins || []).length === 0 && userId) {
+      addAdmin(group, userId);
+    }
+    await saveGroup(group);
   }
-  if ((group.admins || []).length === 0 && userId) {
-    addAdmin(group, userId);
-  }
-  await saveGroup(group);
 
   const ownerId = group.owner_id;
   let plan = ownerId ? await getPlan(ownerId) : null;
@@ -1662,9 +1756,7 @@ async function handleCommand(event, rawText) {
     await replyText(
       event.replyToken,
       group.langs.length
-        ? `本群語言：${group.langs
-            .map((l) => `${LANG_LABELS[l]}(${l})`)
-            .join("、")}`
+        ? `本群語言：${group.langs.map((l) => `${LANG_LABELS[l]}(${l})`).join("、")}`
         : `本群尚未設定語言。`
     );
     return true;
@@ -1675,7 +1767,7 @@ async function handleCommand(event, rawText) {
       event.replyToken,
       plan?.vip_expires_at
         ? `你的使用期限到：${formatDateTime(plan.vip_expires_at)}`
-        : `目前方案：${plan?.plan_type || "未開通"}`
+        : `目前方案：${getPlanDisplayLabel(plan)}`
     );
     return true;
   }
@@ -1702,6 +1794,17 @@ async function handleCommand(event, rawText) {
   }
 
   if (cmd === "/menu" || cmd === "/語言選單") {
+    if (!group.owner_id && chatType !== "user") {
+      await replyMessages(event.replyToken, [
+        buildLanguageMenuFlex(),
+        {
+          type: "text",
+          text: "本群尚未設定管理人。請直接按語言，第一個成功設定的人會成為此群管理人。",
+        },
+      ]);
+      return true;
+    }
+
     if (!superAdmin && !canLanguageManage(group, plan, userId)) {
       await replyText(
         event.replyToken,
@@ -1709,9 +1812,34 @@ async function handleCommand(event, rawText) {
       );
       return true;
     }
+
     await replyMessages(event.replyToken, [
       buildLanguageMenuFlex(),
       { type: "text", text: "請加入或移除本群要輸出的語言。" },
+    ]);
+    return true;
+  }
+
+  if (cmd === "/重設語言" || cmd === "/resetlangs") {
+    if (chatType === "user") {
+      await replyText(event.replyToken, "此功能只適用於群組或多人聊天室。");
+      return true;
+    }
+
+    if (group.owner_id && !superAdmin && !canLanguageManage(group, plan, userId)) {
+      await replyText(
+        event.replyToken,
+        "你目前不能重設語言，可能是權限不足或方案已到期。"
+      );
+      return true;
+    }
+
+    group.langs = [];
+    await saveGroup(group);
+
+    await replyMessages(event.replyToken, [
+      { type: "text", text: "已重設本群語言設定，請重新選擇語言。" },
+      buildLanguageMenuFlex(),
     ]);
     return true;
   }
@@ -1901,6 +2029,7 @@ async function handleCommand(event, rawText) {
     await savePlan(nextPlan);
     await syncMemberToGoogleSheet({
       userId: arg,
+      event,
       openedAt: getNowTaipeiString(),
     });
 
@@ -1931,6 +2060,7 @@ async function handleCommand(event, rawText) {
       await savePlan(nextPlan);
       await syncMemberToGoogleSheet({
         userId: arg,
+        event,
         openedAt: getNowTaipeiString(),
       });
 
@@ -1946,6 +2076,7 @@ async function handleCommand(event, rawText) {
     await savePlan(nextPlan);
     await syncMemberToGoogleSheet({
       userId: ownerId,
+      event,
       openedAt: getNowTaipeiString(),
     });
 
@@ -1972,6 +2103,7 @@ async function handleCommand(event, rawText) {
     await savePlan(nextPlan);
     await syncMemberToGoogleSheet({
       userId: arg,
+      event,
       openedAt: getNowTaipeiString(),
     });
 
@@ -2012,7 +2144,7 @@ async function handleCommand(event, rawText) {
     const current = await getPlan(arg);
     const disabled = disablePlanObject(current, arg);
     await savePlan(disabled);
-    await syncMemberToGoogleSheet({ userId: arg });
+    await syncMemberToGoogleSheet({ userId: arg, event });
 
     await replyText(event.replyToken, `已停用方案：${arg}`);
     return true;
@@ -2112,13 +2244,13 @@ async function handleTextMessage(event) {
     let targetLangs = [];
 
     if (sourceLang === "th") {
-      targetLangs = ["zh-TW"];
+      targetLangs = ["zh-TW", "en"];
     } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
-      targetLangs = ["th"];
+      targetLangs = ["th", "en"];
     } else if (sourceLang === "en") {
       targetLangs = ["zh-TW", "th"];
     } else {
-      targetLangs = ["zh-TW"];
+      targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
     }
 
     const results = await Promise.all(
@@ -2140,34 +2272,36 @@ async function handleTextMessage(event) {
       return;
     }
 
-    await replyText(event.replyToken, outputs.join("\n"));
+    await replyText(event.replyToken, outputs.join("\n\n"));
     return;
   }
 
- const targetLangs = normalizeLangList(group.langs || []);
-if (!targetLangs.length) {
-  await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
-  return;
-}
-
-const sourceLang = detectSourceLangSimple(text);
-const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
-
-  if (!langsToTranslate.length) {
+  const targetLangs = normalizeLangList(group.langs || []);
+  if (!targetLangs.length) {
+    await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
     return;
   }
 
-const results = await Promise.all(
-  langsToTranslate.map(async (lang) => {
-    try {
-      const translated = await translateToTarget(text, lang);
-      return safeTranslatedLine(lang, translated) || `[${lang}] 翻譯失敗`;
-    } catch (err) {
-      console.error(`translate ${lang} error:`, err);
-      return `[${lang}] 翻譯失敗`;
-    }
-  })
-);
+  const sourceLang = detectSourceLangSimple(text);
+
+  const results = await Promise.all(
+    targetLangs.map(async (lang) => {
+      try {
+        if (lang === sourceLang) {
+          return safeTranslatedLine(lang, text, { original: true });
+        }
+
+        const translated = await translateToTarget(text, lang);
+        return (
+          safeTranslatedLine(lang, translated) ||
+          `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
+        );
+      } catch (err) {
+        console.error(`translate ${lang} error:`, err);
+        return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
+      }
+    })
+  );
 
   const outputs = results.filter(Boolean);
 
@@ -2176,11 +2310,19 @@ const results = await Promise.all(
     return;
   }
 
-  await replyText(event.replyToken, outputs.join("\n"));
+  await replyText(event.replyToken, outputs.join("\n\n"));
 }
 
 async function handleEvent(event) {
   try {
+    if (event?.source?.userId) {
+      try {
+        await captureEventUserProfile(event);
+      } catch (profileErr) {
+        console.error("captureEventUserProfile error =", profileErr);
+      }
+    }
+
     if (event.type === "join") {
       await handleJoin(event);
       return;
