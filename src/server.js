@@ -104,7 +104,48 @@ const LANG_LABELS = {
   lo: "ລາວ",
   ar: "العربية",
 };
+function getPlanDisplayName(plan) {
+  if (!plan || !plan.plan_type) return "未開通";
 
+  if (plan.plan_type === "unlimited_groups") return "無限群方案";
+  if (plan.plan_type === "limited_groups") {
+    if (Number(plan.group_limit) === 1) return "1群方案";
+    return `${plan.group_limit}群方案`;
+  }
+  if (plan.plan_type === "trial_7days") return "7天試用";
+  if (plan.plan_type === "free_trial") return "免費試用";
+
+  return plan.plan_type;
+}
+
+async function getLineDisplayName(event) {
+  try {
+    const userId = event?.source?.userId;
+    if (!userId) return "";
+
+    if (event.source.groupId) {
+      const profile = await lineClient.getGroupMemberProfile(
+        event.source.groupId,
+        userId
+      );
+      return profile?.displayName || "";
+    }
+
+    if (event.source.roomId) {
+      const profile = await lineClient.getRoomMemberProfile(
+        event.source.roomId,
+        userId
+      );
+      return profile?.displayName || "";
+    }
+
+    const profile = await lineClient.getProfile(userId);
+    return profile?.displayName || "";
+  } catch (err) {
+    console.error("getLineDisplayName error =", err);
+    return "";
+  }
+}
 function isSuperAdmin(userId) {
   return SUPER_ADMINS.includes(userId);
 }
@@ -534,6 +575,7 @@ function buildCacheKey({
   text,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
   return crypto
     .createHash("sha1")
@@ -543,6 +585,7 @@ function buildCacheKey({
         String(sourceHint),
         String(targetLang),
         "normal",
+        String(specialHint || ""),
         String(text),
       ].join("__")
     )
@@ -553,12 +596,20 @@ async function getTranslationCache({
   text,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
+
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
     [cacheKey]
   );
+
   return result.rows?.[0]?.translated_text || null;
 }
 
@@ -567,8 +618,15 @@ async function saveTranslationCache({
   translatedText,
   targetLang,
   sourceHint = "auto",
+  specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
+
   await pool.query(
     `
     INSERT INTO translation_cache (cache_key, source_text, target_lang, source_hint, tone_mode, translated_text)
@@ -597,6 +655,7 @@ async function askModelTranslate({
     text,
     targetLang,
     sourceHint,
+    specialHint,
   });
   if (cached) return cleanupTranslation(cached);
 
@@ -620,6 +679,7 @@ async function askModelTranslate({
       translatedText: output,
       targetLang,
       sourceHint,
+      specialHint,
     });
   }
 
@@ -683,14 +743,18 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  if (
-    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
-    (thaiShortChat || thaiDialect)
-  ) {
-    return await translateThaiDialectToChinese(text, targetLang);
-  }
+ if (targetLang === "th" && hasChinese(output)) {
+  output = await askModelTranslate({
+    text,
+    targetLang,
+    sourceHint: sourceLang,
+    specialHint: `${specialHint} 只可輸出純泰文，不可出現中文。若無法翻譯，也不可原樣輸出中文。`.trim(),
+  });
 
-  let specialHint = "";
+  if (hasChinese(output)) {
+    return "แปลไม่สำเร็จ";
+  }
+}
 
   if (fixedTerms.length) {
     specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
