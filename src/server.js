@@ -2265,22 +2265,32 @@ async function handleTextMessage(event) {
       })
     );
 
-      const targetLangs = normalizeLangList(group.langs || []);
+    const outputs = results.filter(Boolean);
+
+    if (!outputs.length) {
+      await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
+      return;
+    }
+
+    await replyText(event.replyToken, outputs.join("\n\n"));
+    return;
+  }
+
+  const targetLangs = normalizeLangList(group.langs || []);
   if (!targetLangs.length) {
     await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
     return;
   }
 
   const sourceLang = detectSourceLangSimple(text);
-  const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
-
-  if (!langsToTranslate.length) {
-    return;
-  }
 
   const results = await Promise.all(
-    langsToTranslate.map(async (lang) => {
+    targetLangs.map(async (lang) => {
       try {
+        if (lang === sourceLang) {
+          return safeTranslatedLine(lang, text, { original: true });
+        }
+
         const translated = await translateToTarget(text, lang);
         return (
           safeTranslatedLine(lang, translated) ||
@@ -2299,8 +2309,6 @@ async function handleTextMessage(event) {
     await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
     return;
   }
-
-  await replyText(event.replyToken, outputs.join("\n\n"));
 
   await replyText(event.replyToken, outputs.join("\n\n"));
 }
