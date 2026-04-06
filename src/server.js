@@ -2144,32 +2144,30 @@ async function handleTextMessage(event) {
     return;
   }
 
-  const targetLangs = normalizeLangList(group.langs || []);
-  if (!targetLangs.length) {
-    await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
-    return;
-  }
+ const targetLangs = normalizeLangList(group.langs || []);
+if (!targetLangs.length) {
+  await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
+  return;
+}
 
-  const sourceLang = detectSourceLangSimple(text);
-  const langsToTranslate = targetLangs
-    .filter((lang) => lang !== sourceLang)
-    .slice(0, 2);
+const sourceLang = detectSourceLangSimple(text);
+const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
 
   if (!langsToTranslate.length) {
     return;
   }
 
-  const results = await Promise.all(
-    langsToTranslate.map(async (lang) => {
-      try {
-        const translated = await translateToTarget(text, lang);
-        return safeTranslatedLine(lang, translated);
-      } catch (err) {
-        console.error(`translate ${lang} error:`, err);
-        return null;
-      }
-    })
-  );
+const results = await Promise.all(
+  langsToTranslate.map(async (lang) => {
+    try {
+      const translated = await translateToTarget(text, lang);
+      return safeTranslatedLine(lang, translated) || `[${lang}] 翻譯失敗`;
+    } catch (err) {
+      console.error(`translate ${lang} error:`, err);
+      return `[${lang}] 翻譯失敗`;
+    }
+  })
+);
 
   const outputs = results.filter(Boolean);
 
