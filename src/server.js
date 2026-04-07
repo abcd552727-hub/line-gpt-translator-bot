@@ -43,7 +43,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v4";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -269,38 +269,8 @@ function cleanupTranslation(text = "") {
     .trim();
 }
 
-function normalizeComparableText(text = "") {
-  return cleanupTranslation(text)
-    .replace(/\s+/g, "")
-    .replace(/[「」『』"'`]/g, "")
-    .trim()
-    .toLowerCase();
-}
-
 function isSameText(a = "", b = "") {
-  return normalizeComparableText(a) === normalizeComparableText(b);
-}
-
-function dedupeTranslatedOutputs(blocks = []) {
-  const seen = new Set();
-  const result = [];
-
-  for (const block of blocks) {
-    const body = String(block || "")
-      .split("\n")
-      .slice(1)
-      .join("\n")
-      .trim();
-
-    const key = normalizeComparableText(body);
-    if (!key) continue;
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    result.push(block);
-  }
-
-  return result;
+  return cleanupTranslation(a) === cleanupTranslation(b);
 }
 
 function isVeryShortText(text = "") {
@@ -451,21 +421,18 @@ function buildStablePrompt({
   const contextTypoHint = buildContextTypoHint(text);
 
   return `
-你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
+你是專業翻譯機器人，只做翻譯，不聊天。
 
 請把下面內容翻成「${targetName}」。
-只輸出最終翻譯結果。
-不可加前綴，不可加「翻譯：」，不可加引號，不可加括號註解，不可重複原文。
+只輸出翻譯結果，不可解釋，不可加前綴，不可補充說明。
 
 翻譯規則：
-1. 忠實保留原意，不增加、不刪減
-2. 用自然口語表達，不要生硬直譯
-3. 短句、聊天句、口語、省略句，要依對話情境自然翻譯
+1. 保留原意，不增加、不刪減內容
+2. 可依目標語言自然重排語序
+3. 短句、聊天句要翻對話意思，不要逐字死翻
 4. 若來源語言與目標語言不同，不可原樣照抄原文
-5. 除非固定術語表明確要求保留，否則不可混入來源語言文字
-6. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
-7. 若是稱呼語、撒嬌語、請求句，要翻出真正語氣，不要逐字死翻
-8. 若有固定術語，必須完全遵守，不可自行改寫
+5. 若有固定術語，必須照固定術語表使用
+6. 若上下文可幫助理解，只能用來避免翻錯，不可擴寫
 
 來源語言提示：${sourceHint}
 目標語言：${targetName}
@@ -639,9 +606,6 @@ async function translateToTarget(text, targetLang) {
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
-  const allowWholeOriginalText = fixedTerms.some(
-    (item) => item.target === item.src && isSameText(text, item.src)
-  );
   const targetName = getLangPureName(targetLang);
 
   if (
@@ -706,13 +670,14 @@ async function translateToTarget(text, targetLang) {
   };
 
   let output = await askOnce();
+  const normalizedInput = cleanupTranslation(text);
 
   const shouldRetrySameAsInput = (value) => {
     const clean = cleanupTranslation(value);
     if (!clean) return false;
     if (sourceLang === targetLang) return false;
-    if (allowWholeOriginalText) return false;
-    return isSameText(clean, text);
+    if (allowOriginalTerm) return false;
+    return clean === normalizedInput;
   };
 
   if (shouldRetrySameAsInput(output)) {
@@ -2300,7 +2265,7 @@ async function handleTextMessage(event) {
       })
     );
 
-    const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
+    const outputs = results.filter(Boolean);
 
     if (!outputs.length) {
       await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
@@ -2319,15 +2284,13 @@ async function handleTextMessage(event) {
 
   const sourceLang = detectSourceLangSimple(text);
 
-  const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
-
-  if (!langsToTranslate.length) {
-    return;
-  }
-
   const results = await Promise.all(
-    langsToTranslate.map(async (lang) => {
+    targetLangs.map(async (lang) => {
       try {
+        if (lang === sourceLang) {
+          return safeTranslatedLine(lang, text, { original: true });
+        }
+
         const translated = await translateToTarget(text, lang);
         return (
           safeTranslatedLine(lang, translated) ||
@@ -2340,9 +2303,10 @@ async function handleTextMessage(event) {
     })
   );
 
-  const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
+  const outputs = results.filter(Boolean);
 
   if (!outputs.length) {
+    await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
     return;
   }
 
