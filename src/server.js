@@ -43,7 +43,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -64,6 +64,34 @@ const CONTEXT_TYPO_MAP = [
     hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
   },
 ];
+
+const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
+  "ไม่ค่ะ": "不是喔",
+  "ไม่คะ": "不是喔",
+  "ไม่ครับ": "不是喔",
+  "ไม่นะคะ": "不是喔",
+  "ไม่นะครับ": "不是喔",
+  "ไม่ใช่ค่ะ": "不是喔",
+  "ไม่ใช่คะ": "不是喔",
+  "ไม่ใช่ครับ": "不是喔",
+  "ได้ค่ะ": "可以喔",
+  "ได้คะ": "可以喔",
+  "ได้ครับ": "可以喔",
+  "โอเคค่ะ": "好喔",
+  "โอเคคะ": "好喔",
+  "โอเคครับ": "好喔",
+  "โอเค": "好喔",
+  "ใช่ค่ะ": "是喔",
+  "ใช่คะ": "是喔",
+  "ใช่ครับ": "是喔",
+  "อยู่ไหม": "在嗎",
+  "อยู่มั้ย": "在嗎",
+  "ได้ไหม": "可以嗎",
+  "มาไหม": "要來嗎",
+  "ไม่เป็นไร": "沒關係",
+  "ไม่เป็นไรค่ะ": "沒關係",
+  "ไม่เป็นไรครับ": "沒關係",
+};
 
 const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
@@ -303,6 +331,84 @@ function dedupeTranslatedOutputs(blocks = []) {
   return result;
 }
 
+function removeAllowedOriginalTerms(text = "", fixedTerms = []) {
+  let out = String(text || "");
+
+  for (const item of fixedTerms) {
+    if (item?.src && item.target === item.src) {
+      out = out.split(item.src).join("");
+    }
+  }
+
+  return out;
+}
+
+function hasWrongScriptForTarget(text = "", targetLang, fixedTerms = []) {
+  const clean = cleanupTranslation(text);
+  if (!clean) return false;
+
+  if (targetLang === "th") {
+    return hasChinese(clean);
+  }
+
+  if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+    const withoutAllowed = removeAllowedOriginalTerms(clean, fixedTerms);
+    return hasThai(withoutAllowed);
+  }
+
+  if (targetLang === "en") {
+    return /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(clean);
+  }
+
+  return false;
+}
+
+function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
+  let out = cleanupTranslation(text);
+  const placeholders = [];
+
+  for (const item of fixedTerms) {
+    if (item?.src && item.target === item.src) {
+      const token = `__FIXED_TERM_${placeholders.length}__`;
+      placeholders.push({ token, value: item.src });
+      out = out.split(item.src).join(token);
+    }
+  }
+
+  out = out
+    .replace(/นะคะ/g, "喔")
+    .replace(/นะครับ/g, "喔")
+    .replace(/ค่ะ/g, "喔")
+    .replace(/ครับ/g, "喔")
+    .replace(/คะ/g, "嗎")
+    .trim();
+
+  for (const { token, value } of placeholders) {
+    out = out.split(token).join(value);
+  }
+
+  return out;
+}
+
+function normalizeThaiShortKey(text = "") {
+  return String(text || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
+  const key = normalizeThaiShortKey(text);
+  const translated = THAI_SHORT_CHAT_DIRECT_ZH_MAP[key] || null;
+
+  if (!translated) return null;
+
+  if (targetLang === "zh-CN") {
+    return translated
+      .replace(/沒/g, "没")
+      .replace(/嗎/g, "吗");
+  }
+
+  return translated;
+}
+
 function isVeryShortText(text = "") {
   const cleaned = String(text || "").trim().replace(/\s+/g, "");
   return cleaned.length > 0 && cleaned.length <= 14;
@@ -455,17 +561,18 @@ function buildStablePrompt({
 
 請把下面內容翻成「${targetName}」。
 只輸出最終翻譯結果。
-不可加前綴，不可加「翻譯：」，不可加引號，不可加括號註解，不可重複原文。
+不可加前綴，不可加「翻譯：」，不可加引號，不可加括號註解。
 
 翻譯規則：
 1. 忠實保留原意，不增加、不刪減
 2. 用自然口語表達，不要生硬直譯
 3. 短句、聊天句、口語、省略句，要依對話情境自然翻譯
 4. 若來源語言與目標語言不同，不可原樣照抄原文
-5. 除非固定術語表明確要求保留，否則不可混入來源語言文字
-6. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
-7. 若是稱呼語、撒嬌語、請求句，要翻出真正語氣，不要逐字死翻
+5. 若目標語言是中文，輸出必須是純中文，不可殘留泰文語氣詞，例如「คะ / ค่ะ / ครับ」
+6. 若目標語言是泰文，輸出必須是純泰文，不可混入中文
+7. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
 8. 若有固定術語，必須完全遵守，不可自行改寫
+9. 不可重複原文，不可把原文和翻譯一起輸出
 
 來源語言提示：${sourceHint}
 目標語言：${targetName}
@@ -605,26 +712,32 @@ async function verifyPlaceNameOnline(text) {
 }
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
-  const targetName = targetLang === "zh-CN" ? "簡體中文" : "繁體中文";
+  const targetName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
+
+  const direct = getDirectThaiShortChinese(text, targetLang);
+  if (direct) return direct;
 
   return await askModelTranslate({
     text,
     targetLang,
-    sourceHint: "泰文或泰國方言",
+    sourceHint: "泰文或泰國口語 / 方言",
     specialHint: `
-這段可能含泰國各地口語或方言。
-像「ยัง / ยังคะ / ยังค่ะ」這類超短句，優先理解成：
-還嗎、還沒嗎、還在嗎、還有嗎。
-不可亂翻成回答句。
-若碰到無法確認正式中文的地名、人名、店名：
-- 若固定術語表已指定，必須照固定術語表
-- 若未指定，才可用中文諧音或音譯呈現
+這段很可能是泰文短句、聊天句、口語或方言，請翻成自然${targetName}對話。
+
+重要規則：
+1. 所有泰文都必須翻成中文，不可殘留任何泰文字
+2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
+3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
+4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
+5. 像「ยัง / ยังคะ / ยังค่ะ」這類短句，優先理解成「還嗎 / 還沒嗎 / 還在嗎 / 還有嗎」這類詢問，不可誤翻成回答句
+6. 不可逐字硬翻，要翻成自然聊天中文
+
 ${
   allowOriginalTerm
-    ? "若固定術語表指定保留原詞，可保留該原詞。"
-    : `目標語言必須是純${targetName}。`
+    ? "若固定術語表指定保留原詞，只有該固定詞可保留原樣，其餘泰文仍必須翻成中文。"
+    : `輸出必須是純${targetName}。`
 }
     `.trim(),
   });
@@ -654,13 +767,6 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  if (
-    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
-    (thaiShortChat || thaiDialect)
-  ) {
-    return await translateThaiDialectToChinese(text, targetLang);
-  }
-
   let specialHint = "";
 
   if (fixedTerms.length) {
@@ -668,7 +774,7 @@ async function translateToTarget(text, targetLang) {
   }
 
   if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，可依前文判斷正確意思，但不可擴寫成完整回答句。";
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
   }
 
   if (mixedZhTh) {
@@ -705,7 +811,16 @@ async function translateToTarget(text, targetLang) {
     });
   };
 
-  let output = await askOnce();
+  let output = "";
+
+  if (
+    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
+    (thaiShortChat || thaiDialect)
+  ) {
+    output = await translateThaiDialectToChinese(text, targetLang);
+  } else {
+    output = await askOnce();
+  }
 
   const shouldRetrySameAsInput = (value) => {
     const clean = cleanupTranslation(value);
@@ -715,34 +830,51 @@ async function translateToTarget(text, targetLang) {
     return isSameText(clean, text);
   };
 
-  if (shouldRetrySameAsInput(output)) {
-    output = await askOnce(
-      `這次必須真正翻成${targetName}，不可原樣輸出來源文字，不可照抄原文。`
-    );
-  }
+  let retryCount = 0;
 
-  if (targetLang === "th" && hasChinese(output)) {
-    output = await askOnce("只可輸出純泰文，不可出現中文。");
-  }
+  while (retryCount < 3) {
+    const sameAsInput = shouldRetrySameAsInput(output);
+    const wrongScript = hasWrongScriptForTarget(output, targetLang, fixedTerms);
 
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(output)) {
-    if (!allowOriginalTerm) {
-      output = await askOnce(
-        "只可輸出純中文，不可出現泰文；但若固定術語表指定保留原詞，則可保留該原詞。"
-      );
+    if (!sameAsInput && !wrongScript) {
+      break;
     }
+
+    const extraHints = [];
+
+    if (sameAsInput) {
+      extraHints.push(`這次必須真正翻成${targetName}，不可原樣輸出來源文字。`);
+    }
+
+    if (wrongScript) {
+      if (targetLang === "th") {
+        extraHints.push("只可輸出純泰文，不可出現中文。");
+      } else if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+        extraHints.push(
+          "只可輸出純中文，不可出現任何泰文；包含「คะ / ค่ะ / ครับ」也必須翻成中文語氣。"
+        );
+      } else if (targetLang === "en") {
+        extraHints.push("只可輸出純英文，不可出現中文或泰文。");
+      }
+    }
+
+    output = await askOnce(extraHints.join(" "));
+    retryCount += 1;
   }
 
-  if (
-    targetLang === "en" &&
-    /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(output) &&
-    !/[A-Za-z]/.test(output)
-  ) {
-    output = await askOnce("只可輸出純英文，不可出現中文或泰文。");
-  }
+  if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+    output = cleanupResidualThaiInChinese(output, fixedTerms);
 
-  if (shouldRetrySameAsInput(output)) {
-    output = await askOnce(`再次提醒：不可原樣輸出原文，必須翻成${targetName}。`);
+    if (hasWrongScriptForTarget(output, targetLang, fixedTerms)) {
+      output = await askModelTranslate({
+        text: output,
+        targetLang,
+        sourceHint: "含少量殘留泰文的中文翻譯結果",
+        specialHint: `請把這句整理成純${targetName}，不可保留任何泰文，尤其不可保留「คะ / ค่ะ / ครับ」。只輸出整理後結果。`,
+      });
+
+      output = cleanupResidualThaiInChinese(output, fixedTerms);
+    }
   }
 
   return cleanupTranslation(output);
@@ -2318,7 +2450,6 @@ async function handleTextMessage(event) {
   }
 
   const sourceLang = detectSourceLangSimple(text);
-
   const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
 
   if (!langsToTranslate.length) {
