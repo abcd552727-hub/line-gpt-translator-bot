@@ -28,6 +28,28 @@ const {
   PORT = 3000,
 } = process.env;
 
+const OPENAI_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.OPENAI_TIMEOUT_MS || 15000)
+);
+
+const OPENAI_MAX_RETRIES = Math.max(
+  0,
+  Number(process.env.OPENAI_MAX_RETRIES || 1)
+);
+
+const WEBHOOK_EVENT_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.WEBHOOK_EVENT_CONCURRENCY || 3)
+);
+
+const MAX_TRANSLATION_RETRIES = Math.max(
+  0,
+  Number(process.env.MAX_TRANSLATION_RETRIES || 1)
+);
+
+const LOG_TIMING = process.env.LOG_TIMING !== "0";
+
 const missingVars = [];
 if (!LINE_CHANNEL_ACCESS_TOKEN) missingVars.push("LINE_CHANNEL_ACCESS_TOKEN");
 if (!LINE_CHANNEL_SECRET) missingVars.push("LINE_CHANNEL_SECRET");
@@ -43,7 +65,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v6";
+const CACHE_VERSION = "v7";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -73,7 +95,7 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "ไม่นะครับ": "不是喔",
   "ไม่ใช่ค่ะ": "不是喔",
   "ไม่ใช่คะ": "不是喔",
-  "ไม่ใช่ครับ": "不是喔",
+  "不ใช่ครับ": "不是喔",
   "ได้ค่ะ": "可以喔",
   "ได้คะ": "可以喔",
   "ได้ครับ": "可以喔",
@@ -90,7 +112,15 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "มาไหม": "要來嗎",
   "ไม่เป็นไร": "沒關係",
   "ไม่เป็นไรค่ะ": "沒關係",
-  "ไม่เป็นไรครับ": "沒關係",
+  "不เป็นไรครับ": "沒關係",
+  "ยัง": "還沒",
+  "ยังคะ": "還沒喔",
+  "ยังค่ะ": "還沒喔",
+  "ยังครับ": "還沒喔",
+  "ยังไหม": "還沒嗎",
+  "ยังมั้ย": "還沒嗎",
+  "ยังหรอ": "還沒嗎",
+  "ยังเหรอ": "還沒嗎",
 };
 
 const SUPER_ADMINS = [
@@ -106,7 +136,12 @@ const lineConfig = {
 };
 
 const lineClient = new Client(lineConfig);
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+  timeout: OPENAI_TIMEOUT_MS,
+  maxRetries: OPENAI_MAX_RETRIES,
+});
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -132,6 +167,38 @@ const LANG_LABELS = {
   lo: "ລາວ",
   ar: "العربية",
 };
+
+function logTiming(label, startAt, extra = "") {
+  if (!LOG_TIMING) return;
+  const ms = Date.now() - startAt;
+  console.log(`[TIMING] ${label}: ${ms}ms${extra ? ` | ${extra}` : ""}`);
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runner() {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) return;
+
+      try {
+        const value = await worker(items[currentIndex], currentIndex);
+        results[currentIndex] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[currentIndex] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  const runnerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: runnerCount }, () => runner()));
+
+  return results;
+}
 
 function isSuperAdmin(userId) {
   return SUPER_ADMINS.includes(userId);
@@ -402,6 +469,7 @@ function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
 
   if (targetLang === "zh-CN") {
     return translated
+      .replace(/還/g, "还")
       .replace(/沒/g, "没")
       .replace(/嗎/g, "吗");
   }
@@ -573,6 +641,7 @@ function buildStablePrompt({
 7. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
 8. 若有固定術語，必須完全遵守，不可自行改寫
 9. 不可重複原文，不可把原文和翻譯一起輸出
+10. 若原文是極短泰文如「ยัง / ยังค่ะ / ยังครับ」，必須依上下文自然翻譯成中文，例如「還沒 / 還沒喔 / 還沒嗎 / 還在嗎 / 還有嗎」，不可直譯成不自然的「還嗎」
 
 來源語言提示：${sourceHint}
 目標語言：${targetName}
@@ -666,12 +735,19 @@ async function askModelTranslate({
   sourceHint = "auto",
   specialHint = "",
 }) {
+  const cacheReadStart = Date.now();
   const cached = await getTranslationCache({
     text,
     targetLang,
     sourceHint,
     specialHint,
   });
+  logTiming(
+    "translation_cache_read",
+    cacheReadStart,
+    `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
+  );
+
   if (cached) return cleanupTranslation(cached);
 
   const prompt = buildStablePrompt({
@@ -681,15 +757,22 @@ async function askModelTranslate({
     specialHint,
   });
 
+  const openaiStart = Date.now();
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     temperature: 0.2,
     input: prompt,
   });
+  logTiming(
+    "openai_responses_create",
+    openaiStart,
+    `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
+  );
 
   const output = cleanupTranslation(response.output_text || "");
 
   if (output) {
+    const cacheSaveStart = Date.now();
     await saveTranslationCache({
       text,
       translatedText: output,
@@ -697,6 +780,7 @@ async function askModelTranslate({
       sourceHint,
       specialHint,
     });
+    logTiming("translation_cache_save", cacheSaveStart, `target=${targetLang}`);
   }
 
   return output;
@@ -731,7 +815,10 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
 3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
 4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
-5. 像「ยัง / ยังคะ / ยังค่ะ」這類短句，優先理解成「還嗎 / 還沒嗎 / 還在嗎 / 還有嗎」這類詢問，不可誤翻成回答句
+5. 像「ยัง / ยังค่ะ / ยังครับ」這類短句非常依賴上下文：
+- 若是在回答別人的問題，通常翻成「還沒 / 還沒喔」
+- 若是在追問進度或狀態，依語境翻成「還沒嗎？/ 還在嗎？/ 還有嗎？/ 好了嗎？」
+- 不可直譯成不自然的「還嗎」
 6. 不可逐字硬翻，要翻成自然聊天中文
 
 ${
@@ -832,7 +919,7 @@ async function translateToTarget(text, targetLang) {
 
   let retryCount = 0;
 
-  while (retryCount < 3) {
+  while (retryCount < MAX_TRANSLATION_RETRIES) {
     const sameAsInput = shouldRetrySameAsInput(output);
     const wrongScript = hasWrongScriptForTarget(output, targetLang, fixedTerms);
 
@@ -857,6 +944,10 @@ async function translateToTarget(text, targetLang) {
         extraHints.push("只可輸出純英文，不可出現中文或泰文。");
       }
     }
+
+    console.warn(
+      `[translate-retry] target=${targetLang} retry=${retryCount + 1} sameAsInput=${sameAsInput} wrongScript=${wrongScript}`
+    );
 
     output = await askOnce(extraHints.join(" "));
     retryCount += 1;
@@ -1298,6 +1389,9 @@ async function getGroup(chatId) {
 }
 
 async function ensureGroupDb(chatId) {
+  const existing = await getGroup(chatId);
+  if (existing) return existing;
+
   await pool.query(
     `
     INSERT INTO group_subscriptions (chat_id, owner_id, langs, admins, tone_mode)
@@ -1347,6 +1441,9 @@ async function getPlan(userId) {
 }
 
 async function ensurePlanDb(userId) {
+  const existing = await getPlan(userId);
+  if (existing) return existing;
+
   await pool.query(
     `
     INSERT INTO plans (user_id, plan_type, group_limit, vip_expires_at, bound_groups, daily_limit, trial_type)
@@ -2321,113 +2418,155 @@ async function handleCommand(event, rawText) {
 }
 
 async function handleTextMessage(event) {
-  const text = (event.message?.text || "").trim();
-  if (!text) return;
-
-  if (text.startsWith("/")) {
-    const handled = await handleCommand(event, text);
-    if (handled) return;
-  }
-
-  const chatType = getChatType(event);
+  const startedAt = Date.now();
   const chatId = getChatId(event);
-  const userId = event.source.userId;
+  const userId = event?.source?.userId || "-";
 
-  const group = await ensureGroupDb(chatId);
+  try {
+    const text = (event.message?.text || "").trim();
+    if (!text) return;
 
-  let actingPlan = null;
-  let limitUserId = userId;
-
-  if (chatType === "user") {
-    actingPlan = await getPlan(userId);
-    if (!actingPlan) {
-      actingPlan = createFreeTrialPlanObject(userId);
-      await savePlan(actingPlan);
-    }
-  } else {
-    const ownerId = group.owner_id;
-    if (!ownerId) {
-      await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
-      return;
+    if (text.startsWith("/")) {
+      const handled = await handleCommand(event, text);
+      if (handled) return;
     }
 
-    actingPlan = await getPlan(ownerId);
-    if (!actingPlan) {
-      actingPlan = createFreeTrialPlanObject(ownerId);
-      await savePlan(actingPlan);
+    const chatType = getChatType(event);
+
+    const group = await ensureGroupDb(chatId);
+
+    let actingPlan = null;
+    let limitUserId = userId;
+
+    if (chatType === "user") {
+      actingPlan = await getPlan(userId);
+      if (!actingPlan) {
+        actingPlan = createFreeTrialPlanObject(userId);
+        await savePlan(actingPlan);
+      }
+    } else {
+      const ownerId = group.owner_id;
+      if (!ownerId) {
+        await replyText(event.replyToken, "本群尚未設定管理人，請先按語言選單。");
+        return;
+      }
+
+      actingPlan = await getPlan(ownerId);
+      if (!actingPlan) {
+        actingPlan = createFreeTrialPlanObject(ownerId);
+        await savePlan(actingPlan);
+      }
+      limitUserId = ownerId;
     }
-    limitUserId = ownerId;
-  }
 
-  if (!isPlanActive(actingPlan)) {
-    await replyText(
-      event.replyToken,
-      [
-        "本群翻譯方案已到期",
-        "目前無法使用語言設定與自動翻譯",
-        "",
-        "如需續費開通",
-        `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
-      ].join("\n")
-    );
-    return;
-  }
-
-  if (chatType !== "user" && !canUseGroup(actingPlan, chatId)) {
-    await replyText(event.replyToken, "此方案可用群組數量已滿，請升級方案。");
-    return;
-  }
-
-  if (chatType !== "user" && !(actingPlan.bound_groups || []).includes(chatId)) {
-    bindGroupToOwner(actingPlan, chatId);
-    await savePlan(actingPlan);
-  }
-
-  if (actingPlan.daily_limit) {
-    const limitResult = await checkDailyLimit(
-      limitUserId,
-      chatId,
-      actingPlan.daily_limit
-    );
-
-    if (!limitResult.allowed) {
+    if (!isPlanActive(actingPlan)) {
       await replyText(
         event.replyToken,
         [
-          "你目前為免費試用方案",
-          `今日免費 ${actingPlan.daily_limit} 句已用完`,
+          "本群翻譯方案已到期",
+          "目前無法使用語言設定與自動翻譯",
           "",
-          "如需升級或開通 7 天試用",
+          "如需續費開通",
           `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
         ].join("\n")
       );
       return;
     }
-  }
 
-  if (chatType === "user") {
+    if (chatType !== "user" && !canUseGroup(actingPlan, chatId)) {
+      await replyText(event.replyToken, "此方案可用群組數量已滿，請升級方案。");
+      return;
+    }
+
+    if (chatType !== "user" && !(actingPlan.bound_groups || []).includes(chatId)) {
+      bindGroupToOwner(actingPlan, chatId);
+      await savePlan(actingPlan);
+    }
+
+    if (actingPlan.daily_limit) {
+      const limitResult = await checkDailyLimit(
+        limitUserId,
+        chatId,
+        actingPlan.daily_limit
+      );
+
+      if (!limitResult.allowed) {
+        await replyText(
+          event.replyToken,
+          [
+            "你目前為免費試用方案",
+            `今日免費 ${actingPlan.daily_limit} 句已用完`,
+            "",
+            "如需升級或開通 7 天試用",
+            `請聯絡管理員 LINE：${CONTACT_LINE_ID}`,
+          ].join("\n")
+        );
+        return;
+      }
+    }
+
+    if (chatType === "user") {
+      const sourceLang = detectSourceLangSimple(text);
+
+      let targetLangs = [];
+
+      if (sourceLang === "th") {
+        targetLangs = ["zh-TW", "en"];
+      } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
+        targetLangs = ["th", "en"];
+      } else if (sourceLang === "en") {
+        targetLangs = ["zh-TW", "th"];
+      } else {
+        targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
+      }
+
+      const results = await Promise.all(
+        targetLangs.map(async (lang) => {
+          try {
+            const translated = await translateToTarget(text, lang);
+            return safeTranslatedLine(lang, translated);
+          } catch (err) {
+            console.error(`translate ${lang} error:`, err);
+            return null;
+          }
+        })
+      );
+
+      const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
+
+      if (!outputs.length) {
+        await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
+        return;
+      }
+
+      await replyText(event.replyToken, outputs.join("\n\n"));
+      return;
+    }
+
+    const targetLangs = normalizeLangList(group.langs || []);
+    if (!targetLangs.length) {
+      await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
+      return;
+    }
+
     const sourceLang = detectSourceLangSimple(text);
+    const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
 
-    let targetLangs = [];
-
-    if (sourceLang === "th") {
-      targetLangs = ["zh-TW", "en"];
-    } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
-      targetLangs = ["th", "en"];
-    } else if (sourceLang === "en") {
-      targetLangs = ["zh-TW", "th"];
-    } else {
-      targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
+    if (!langsToTranslate.length) {
+      return;
     }
 
     const results = await Promise.all(
-      targetLangs.map(async (lang) => {
+      langsToTranslate.map(async (lang) => {
         try {
           const translated = await translateToTarget(text, lang);
-          return safeTranslatedLine(lang, translated);
+          return (
+            safeTranslatedLine(lang, translated) ||
+            `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
+          );
         } catch (err) {
           console.error(`translate ${lang} error:`, err);
-          return null;
+          return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
         }
       })
     );
@@ -2435,59 +2574,28 @@ async function handleTextMessage(event) {
     const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
     if (!outputs.length) {
-      await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
       return;
     }
 
     await replyText(event.replyToken, outputs.join("\n\n"));
-    return;
+  } finally {
+    logTiming("handleTextMessage", startedAt, `chatId=${chatId} userId=${userId}`);
   }
-
-  const targetLangs = normalizeLangList(group.langs || []);
-  if (!targetLangs.length) {
-    await replyText(event.replyToken, "本群尚未設定語言，請管理人按語言選單設定。");
-    return;
-  }
-
-  const sourceLang = detectSourceLangSimple(text);
-  const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
-
-  if (!langsToTranslate.length) {
-    return;
-  }
-
-  const results = await Promise.all(
-    langsToTranslate.map(async (lang) => {
-      try {
-        const translated = await translateToTarget(text, lang);
-        return (
-          safeTranslatedLine(lang, translated) ||
-          `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-        );
-      } catch (err) {
-        console.error(`translate ${lang} error:`, err);
-        return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
-      }
-    })
-  );
-
-  const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
-
-  if (!outputs.length) {
-    return;
-  }
-
-  await replyText(event.replyToken, outputs.join("\n\n"));
 }
 
 async function handleEvent(event) {
+  const startedAt = Date.now();
+  const chatId =
+    event?.source?.groupId || event?.source?.roomId || event?.source?.userId || "-";
+  const userId = event?.source?.userId || "-";
+  const eventType = event?.type || "unknown";
+
   try {
     if (event?.source?.userId) {
-      try {
-        await captureEventUserProfile(event);
-      } catch (profileErr) {
+      void captureEventUserProfile(event).catch((profileErr) => {
         console.error("captureEventUserProfile error =", profileErr);
-      }
+        if (profileErr?.stack) console.error(profileErr.stack);
+      });
     }
 
     if (event.type === "join") {
@@ -2519,6 +2627,12 @@ async function handleEvent(event) {
         console.error("reply fallback error =", replyErr);
       }
     }
+  } finally {
+    logTiming(
+      "handleEvent",
+      startedAt,
+      `type=${eventType} chatId=${chatId} userId=${userId}`
+    );
   }
 }
 
@@ -2542,18 +2656,34 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-app.post("/webhook", middleware(lineConfig), async (req, res) => {
+app.post("/webhook", middleware(lineConfig), (req, res) => {
   res.sendStatus(200);
 
-  try {
-    const events = req.body.events || [];
-    for (const event of events) {
-      await handleEvent(event);
-    }
-  } catch (err) {
-    console.error("Webhook error:", err);
-    if (err?.stack) console.error(err.stack);
-  }
+  const startedAt = Date.now();
+  const events = req.body.events || [];
+
+  void runWithConcurrency(events, WEBHOOK_EVENT_CONCURRENCY, handleEvent)
+    .then((results) => {
+      const failed = results.filter((r) => r?.status === "rejected");
+
+      if (failed.length) {
+        console.error(`Webhook batch failed count=${failed.length}`);
+        for (const item of failed) {
+          console.error(item.reason);
+          if (item.reason?.stack) console.error(item.reason.stack);
+        }
+      }
+
+      logTiming(
+        "webhook_batch",
+        startedAt,
+        `events=${events.length} concurrency=${WEBHOOK_EVENT_CONCURRENCY}`
+      );
+    })
+    .catch((err) => {
+      console.error("Webhook error:", err);
+      if (err?.stack) console.error(err.stack);
+    });
 });
 
 initDb()
@@ -2567,6 +2697,12 @@ initDb()
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      console.log(
+        `OpenAI model=${OPENAI_MODEL}, timeout=${OPENAI_TIMEOUT_MS}ms, retries=${OPENAI_MAX_RETRIES}`
+      );
+      console.log(
+        `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
+      );
     });
   })
   .catch((err) => {
