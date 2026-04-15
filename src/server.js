@@ -1245,6 +1245,7 @@ function buildAdminHelpText(superAdmin) {
       "/開通不限30 使用者ID",
       "/試用7天 使用者ID",
       "/查方案 使用者ID",
+      "/清空綁群 使用者ID",
       "/停用 使用者ID",
       "/全部會員 [頁數]",
       "/會員列表 [頁數]",
@@ -1794,13 +1795,24 @@ function unbindGroupFromOwner(plan, groupId) {
   plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
 }
 
-function createPaidPlanObject(userId, planType, groupLimit, days, oldPlan = null) {
+function createPaidPlanObject(
+  userId,
+  planType,
+  groupLimit,
+  days,
+  oldPlan = null,
+  options = {}
+) {
+  const { resetBoundGroups = false } = options;
+
   return {
     user_id: userId,
     plan_type: planType,
     group_limit: groupLimit,
     vip_expires_at: addDays(days),
-    bound_groups: Array.isArray(oldPlan?.bound_groups)
+    bound_groups: resetBoundGroups
+      ? []
+      : Array.isArray(oldPlan?.bound_groups)
       ? [...new Set(oldPlan.bound_groups)]
       : [],
     daily_limit: null,
@@ -1845,6 +1857,102 @@ function disablePlanObject(plan, userId) {
     bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
     daily_limit: plan?.daily_limit ?? null,
     trial_type: plan?.trial_type ?? null,
+  };
+}
+
+async function releaseGroupBinding(chatId, { deleteGroupRow = false } = {}) {
+  if (!chatId) return;
+
+  const group = await getGroup(chatId);
+  if (!group) return;
+
+  if (group.owner_id) {
+    const ownerPlan = await getPlan(group.owner_id);
+    if (ownerPlan) {
+      unbindGroupFromOwner(ownerPlan, chatId);
+      await savePlan(ownerPlan);
+    }
+  }
+
+  if (deleteGroupRow) {
+    await pool.query(`DELETE FROM group_subscriptions WHERE chat_id = $1`, [chatId]);
+    return;
+  }
+
+  group.owner_id = null;
+  group.admins = [];
+  group.langs = [];
+  await saveGroup(group);
+}
+
+async function handleMemberLeft(event) {
+  const chatId = getChatId(event);
+  const group = await getGroup(chatId);
+  if (!group) return;
+
+  const leftMembers = Array.isArray(event.left?.members) ? event.left.members : [];
+  const leftUserIds = leftMembers.map((m) => m.userId).filter(Boolean);
+
+  if (!leftUserIds.length) return;
+
+  let changed = false;
+
+  for (const leftUserId of leftUserIds) {
+    if ((group.admins || []).includes(leftUserId)) {
+      removeAdmin(group, leftUserId);
+      changed = true;
+    }
+
+    if (group.owner_id === leftUserId) {
+      const ownerPlan = await getPlan(leftUserId);
+      if (ownerPlan) {
+        unbindGroupFromOwner(ownerPlan, chatId);
+        await savePlan(ownerPlan);
+      }
+
+      group.owner_id = null;
+      group.admins = [];
+      group.langs = [];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await saveGroup(group);
+  }
+}
+
+async function handleLeave(event) {
+  const chatId = getChatId(event);
+  await releaseGroupBinding(chatId, { deleteGroupRow: true });
+}
+
+async function clearAllBindingsByUserId(userId) {
+  if (!userId) return { clearedGroups: 0 };
+
+  await pool.query(
+    `
+    UPDATE plans
+    SET bound_groups = '[]'::jsonb
+    WHERE user_id = $1
+    `,
+    [userId]
+  );
+
+  const result = await pool.query(
+    `
+    UPDATE group_subscriptions
+    SET owner_id = NULL,
+        admins = '[]'::jsonb,
+        langs = '[]'::jsonb,
+        tone_mode = 'normal'
+    WHERE owner_id = $1
+    `,
+    [userId]
+  );
+
+  return {
+    clearedGroups: result.rowCount || 0,
   };
 }
 
@@ -2205,11 +2313,9 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    const currentPlan = await ensurePlanDb(ownerId);
-    unbindGroupFromOwner(currentPlan, chatId);
-    await savePlan(currentPlan);
+    await releaseGroupBinding(chatId);
 
-    await replyText(event.replyToken, "本群已解除綁定。");
+    await replyText(event.replyToken, "本群已解除綁定，並清除群組綁定資料。");
     return true;
   }
 
@@ -2289,7 +2395,15 @@ async function handleCommand(event, rawText) {
     }
 
     const oldPlan = await getPlan(arg);
-    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
+    const nextPlan = createPaidPlanObject(
+      arg,
+      "limited_groups",
+      1,
+      30,
+      oldPlan,
+      { resetBoundGroups: true }
+    );
+
     await savePlan(nextPlan);
     await syncMemberToGoogleSheet({
       userId: arg,
@@ -2299,7 +2413,7 @@ async function handleCommand(event, rawText) {
 
     await replyText(
       event.replyToken,
-      `已開通 1群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 1群 / 30天（已清空舊綁定群）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -2391,6 +2505,26 @@ async function handleCommand(event, rawText) {
 
     const targetPlan = await getPlan(arg);
     await replyText(event.replyToken, buildPlanText(arg, targetPlan));
+    return true;
+  }
+
+  if (cmd === "/清空綁群") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    if (!arg) {
+      await replyText(event.replyToken, "用法：/清空綁群 使用者ID");
+      return true;
+    }
+
+    const result = await clearAllBindingsByUserId(arg);
+
+    await replyText(
+      event.replyToken,
+      `已清空使用者綁群資料\n使用者：${arg}\n清除群數：${result.clearedGroups}`
+    );
     return true;
   }
 
@@ -2605,6 +2739,16 @@ async function handleEvent(event) {
 
     if (event.type === "follow") {
       await handleFollow(event);
+      return;
+    }
+
+    if (event.type === "memberLeft") {
+      await handleMemberLeft(event);
+      return;
+    }
+
+    if (event.type === "leave") {
+      await handleLeave(event);
       return;
     }
 
