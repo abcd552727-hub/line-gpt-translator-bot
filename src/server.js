@@ -489,7 +489,7 @@ function looksLikeThaiShortChat(text = "") {
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|不|ไม่ครับ|ไม่เอา|เอา)$/.test(
       t
     )
   );
@@ -773,327 +773,17 @@ async function askModelTranslate({
 
   if (output) {
     const cacheSaveStart = Date.now();
-    void saveTranslationCache({
+    await saveTranslationCache({
       text,
       translatedText: output,
       targetLang,
       sourceHint,
       specialHint,
-    }).catch((err) => {
-      console.error("saveTranslationCache error =", err);
-      if (err?.stack) console.error(err.stack);
     });
-    logTiming("translation_cache_save_async", cacheSaveStart, `target=${targetLang}`);
+    logTiming("translation_cache_save", cacheSaveStart, `target=${targetLang}`);
   }
 
   return output;
-}
-
-function buildMultiTargetCacheKey({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  return crypto
-    .createHash("sha1")
-    .update(
-      [
-        CACHE_VERSION,
-        "multi",
-        String(sourceHint),
-        [...targetLangs].sort().join(","),
-        String(specialHint),
-        String(text),
-      ].join("__")
-    )
-    .digest("hex");
-}
-
-async function getMultiTranslationCache({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const cacheKey = buildMultiTargetCacheKey({
-    text,
-    targetLangs,
-    sourceHint,
-    specialHint,
-  });
-
-  const result = await pool.query(
-    `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
-    [cacheKey]
-  );
-
-  if (!result.rows?.[0]?.translated_text) return null;
-
-  try {
-    return JSON.parse(result.rows[0].translated_text);
-  } catch {
-    return null;
-  }
-}
-
-async function saveMultiTranslationCache({
-  text,
-  translatedMap,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const cacheKey = buildMultiTargetCacheKey({
-    text,
-    targetLangs,
-    sourceHint,
-    specialHint,
-  });
-
-  await pool.query(
-    `
-    INSERT INTO translation_cache (cache_key, source_text, target_lang, source_hint, tone_mode, translated_text)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (cache_key)
-    DO UPDATE SET translated_text = EXCLUDED.translated_text, created_at = NOW()
-    `,
-    [
-      cacheKey,
-      text,
-      `multi:${[...targetLangs].sort().join(",")}`,
-      sourceHint,
-      "normal",
-      JSON.stringify(translatedMap),
-    ]
-  );
-}
-
-function safeJsonParse(text = "") {
-  const raw = String(text || "").trim();
-  if (!raw) return null;
-
-  try {
-    return JSON.parse(raw);
-  } catch {}
-
-  const fencedMatch =
-    raw.match(/```json\s*([\s\S]*?)```/i) || raw.match(/```([\s\S]*?)```/i);
-
-  if (fencedMatch?.[1]) {
-    try {
-      return JSON.parse(fencedMatch[1].trim());
-    } catch {}
-  }
-
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      return JSON.parse(raw.slice(start, end + 1));
-    } catch {}
-  }
-
-  return null;
-}
-
-function buildLangOutputRule(lang) {
-  const targetName = getLangPureName(lang);
-
-  if (lang === "zh-TW") {
-    return `「${lang}」：輸出自然繁體中文。不可殘留泰文語氣詞（如 คะ / ค่ะ / ครับ）。不可中國式生硬書面句。`;
-  }
-
-  if (lang === "zh-CN") {
-    return `「${lang}」：輸出自然简体中文。不可殘留泰文語氣詞（如 คะ / ค่ะ / ครับ）。`;
-  }
-
-  if (lang === "th") {
-    return `「${lang}」：輸出自然泰文。不可混入中文。不可自行加長句子或額外客氣話。`;
-  }
-
-  if (lang === "en") {
-    return `「${lang}」：輸出自然英文。不可混入中文或泰文。不可自行補成更完整、更客氣的句子。`;
-  }
-
-  return `「${lang}」：請翻成自然${targetName}，只輸出該語言內容。`;
-}
-
-function buildMultiStablePrompt({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const fixedTermsHint = buildFixedTermsHint(text);
-  const contextTypoHint = buildContextTypoHint(text);
-
-  return `
-你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
-
-請把同一段內容一次翻成多個目標語言，並且只輸出 JSON。
-不可輸出 markdown，不可加說明，不可加前綴，不可加註解。
-
-輸出格式必須是：
-{
-  "zh-TW": "...",
-  "th": "...",
-  "en": "..."
-}
-
-規則：
-1. 忠實保留原意，不增加、不刪減
-2. 聊天句要自然，不要生硬直譯
-3. 不可把原文和翻譯一起輸出
-4. 每個 key 的 value 只能是該語言的最終翻譯文字
-5. 若某語言不需要翻譯也不可留空，仍要輸出自然翻譯
-6. 固定術語表必須優先遵守，不可改寫
-7. 若原文是泰文短句、口語、省略句，要依聊天語境自然翻譯
-8. 若翻成中文，不可殘留泰文語氣詞
-9. 若翻成泰文，不可混入中文
-
-來源語言提示：${sourceHint}
-補充提示：${specialHint || "無"}
-
-各語言要求：
-${targetLangs.map(buildLangOutputRule).join("\n")}
-
-${fixedTermsHint || ""}
-${contextTypoHint || ""}
-
-內容：
-${text}
-  `.trim();
-}
-
-async function askModelTranslateMulti({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const normalizedTargets = normalizeLangList(targetLangs || []);
-  if (!normalizedTargets.length) return {};
-
-  const cacheReadStart = Date.now();
-  const cached = await getMultiTranslationCache({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  });
-  logTiming(
-    "multi_translation_cache_read",
-    cacheReadStart,
-    `targets=${normalizedTargets.join(",")} hit=${!!cached} chars=${String(text || "").length}`
-  );
-
-  if (cached && typeof cached === "object") {
-    return cached;
-  }
-
-  const prompt = buildMultiStablePrompt({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  });
-
-  const openaiStart = Date.now();
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    input: prompt,
-  });
-  logTiming(
-    "openai_multi_responses_create",
-    openaiStart,
-    `targets=${normalizedTargets.join(",")} model=${OPENAI_MODEL} chars=${String(text || "").length}`
-  );
-
-  const parsed = safeJsonParse(response.output_text || "");
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Multi-translation JSON parse failed");
-  }
-
-  const cleaned = {};
-  for (const lang of normalizedTargets) {
-    cleaned[lang] = cleanupTranslation(parsed[lang] || "");
-  }
-
-  const cacheSaveStart = Date.now();
-  void saveMultiTranslationCache({
-    text,
-    translatedMap: cleaned,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  }).catch((err) => {
-    console.error("saveMultiTranslationCache error =", err);
-    if (err?.stack) console.error(err.stack);
-  });
-  logTiming(
-    "multi_translation_cache_save_async",
-    cacheSaveStart,
-    `targets=${normalizedTargets.join(",")}`
-  );
-
-  return cleaned;
-}
-
-function collectLangSpecialHint(text, targetLang) {
-  const sourceLang = detectSourceLangSimple(text);
-  const thaiShortChat = looksLikeThaiShortChat(text);
-  const thaiDialect = looksLikeThaiDialectText(text);
-  const mixedZhTh = isMixedChineseThai(text);
-  const namedEntityShort = looksLikeNamedEntityShortText(text);
-  const fixedTerms = getMatchedFixedTerms(text);
-
-  let specialHint = "";
-
-  if (fixedTerms.length) {
-    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
-  }
-
-  if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
-  }
-
-  if (thaiDialect) {
-    specialHint += " 這段可能是泰文口語或方言，請依對話情境翻譯成自然用語。";
-  }
-
-  if (mixedZhTh) {
-    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
-  }
-
-  if (namedEntityShort) {
-    specialHint +=
-      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但上下文更像在稱呼真人，請優先依情境修正。";
-  }
-
-  if (targetLang === "th") {
-    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
-  }
-
-  if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
-  }
-
-  if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。";
-  }
-
-  if (targetLang === "en") {
-    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
-  }
-
-  return {
-    sourceLang,
-    thaiShortChat,
-    thaiDialect,
-    specialHint: specialHint.trim(),
-  };
 }
 
 async function verifyPlaceNameOnline(text) {
@@ -1279,77 +969,6 @@ async function translateToTarget(text, targetLang) {
   }
 
   return cleanupTranslation(output);
-}
-
-async function translateToTargets(text, targetLangs) {
-  const normalizedTargets = normalizeLangList(targetLangs || []);
-  if (!normalizedTargets.length) return {};
-
-  const metaByLang = {};
-  let mergedHint = "";
-  let sourceLang = detectSourceLangSimple(text);
-
-  for (const lang of normalizedTargets) {
-    const meta = collectLangSpecialHint(text, lang);
-    metaByLang[lang] = meta;
-    sourceLang = meta.sourceLang || sourceLang;
-    if (meta.specialHint) mergedHint += ` [${lang}] ${meta.specialHint}`;
-  }
-
-  let outputs = await askModelTranslateMulti({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint: sourceLang,
-    specialHint: mergedHint.trim(),
-  });
-
-  const retryTargets = [];
-
-  for (const lang of normalizedTargets) {
-    let value = cleanupTranslation(outputs?.[lang] || "");
-    const fixedTerms = getMatchedFixedTerms(text);
-    const allowWholeOriginalText = fixedTerms.some(
-      (item) => item.target === item.src && isSameText(text, item.src)
-    );
-
-    if (lang === "zh-TW" || lang === "zh-CN") {
-      value = cleanupResidualThaiInChinese(value, fixedTerms);
-    }
-
-    const sameAsInput =
-      !allowWholeOriginalText &&
-      sourceLang !== lang &&
-      isSameText(value, text);
-
-    const wrongScript = hasWrongScriptForTarget(value, lang, fixedTerms);
-    const empty = !value;
-
-    outputs[lang] = value;
-
-    if (empty || sameAsInput || wrongScript) {
-      retryTargets.push(lang);
-    }
-  }
-
-  if (retryTargets.length) {
-    const retryMap = await Promise.all(
-      retryTargets.map(async (lang) => {
-        try {
-          const translated = await translateToTarget(text, lang);
-          return [lang, translated];
-        } catch (err) {
-          console.error(`fallback translate ${lang} error:`, err);
-          return [lang, outputs[lang] || ""];
-        }
-      })
-    );
-
-    for (const [lang, translated] of retryMap) {
-      outputs[lang] = cleanupTranslation(translated || "");
-    }
-  }
-
-  return outputs;
 }
 
 function parsePostbackData(data) {
@@ -1626,7 +1245,6 @@ function buildAdminHelpText(superAdmin) {
       "/開通不限30 使用者ID",
       "/試用7天 使用者ID",
       "/查方案 使用者ID",
-      "/清空綁群 使用者ID",
       "/停用 使用者ID",
       "/全部會員 [頁數]",
       "/會員列表 [頁數]",
@@ -2176,24 +1794,13 @@ function unbindGroupFromOwner(plan, groupId) {
   plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
 }
 
-function createPaidPlanObject(
-  userId,
-  planType,
-  groupLimit,
-  days,
-  oldPlan = null,
-  options = {}
-) {
-  const { resetBoundGroups = false } = options;
-
+function createPaidPlanObject(userId, planType, groupLimit, days, oldPlan = null) {
   return {
     user_id: userId,
     plan_type: planType,
     group_limit: groupLimit,
     vip_expires_at: addDays(days),
-    bound_groups: resetBoundGroups
-      ? []
-      : Array.isArray(oldPlan?.bound_groups)
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
       ? [...new Set(oldPlan.bound_groups)]
       : [],
     daily_limit: null,
@@ -2238,102 +1845,6 @@ function disablePlanObject(plan, userId) {
     bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
     daily_limit: plan?.daily_limit ?? null,
     trial_type: plan?.trial_type ?? null,
-  };
-}
-
-async function releaseGroupBinding(chatId, { deleteGroupRow = false } = {}) {
-  if (!chatId) return;
-
-  const group = await getGroup(chatId);
-  if (!group) return;
-
-  if (group.owner_id) {
-    const ownerPlan = await getPlan(group.owner_id);
-    if (ownerPlan) {
-      unbindGroupFromOwner(ownerPlan, chatId);
-      await savePlan(ownerPlan);
-    }
-  }
-
-  if (deleteGroupRow) {
-    await pool.query(`DELETE FROM group_subscriptions WHERE chat_id = $1`, [chatId]);
-    return;
-  }
-
-  group.owner_id = null;
-  group.admins = [];
-  group.langs = [];
-  await saveGroup(group);
-}
-
-async function handleMemberLeft(event) {
-  const chatId = getChatId(event);
-  const group = await getGroup(chatId);
-  if (!group) return;
-
-  const leftMembers = Array.isArray(event.left?.members) ? event.left.members : [];
-  const leftUserIds = leftMembers.map((m) => m.userId).filter(Boolean);
-
-  if (!leftUserIds.length) return;
-
-  let changed = false;
-
-  for (const leftUserId of leftUserIds) {
-    if ((group.admins || []).includes(leftUserId)) {
-      removeAdmin(group, leftUserId);
-      changed = true;
-    }
-
-    if (group.owner_id === leftUserId) {
-      const ownerPlan = await getPlan(leftUserId);
-      if (ownerPlan) {
-        unbindGroupFromOwner(ownerPlan, chatId);
-        await savePlan(ownerPlan);
-      }
-
-      group.owner_id = null;
-      group.admins = [];
-      group.langs = [];
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await saveGroup(group);
-  }
-}
-
-async function handleLeave(event) {
-  const chatId = getChatId(event);
-  await releaseGroupBinding(chatId, { deleteGroupRow: true });
-}
-
-async function clearAllBindingsByUserId(userId) {
-  if (!userId) return { clearedGroups: 0 };
-
-  await pool.query(
-    `
-    UPDATE plans
-    SET bound_groups = '[]'::jsonb
-    WHERE user_id = $1
-    `,
-    [userId]
-  );
-
-  const result = await pool.query(
-    `
-    UPDATE group_subscriptions
-    SET owner_id = NULL,
-        admins = '[]'::jsonb,
-        langs = '[]'::jsonb,
-        tone_mode = 'normal'
-    WHERE owner_id = $1
-    `,
-    [userId]
-  );
-
-  return {
-    clearedGroups: result.rowCount || 0,
   };
 }
 
@@ -2694,9 +2205,11 @@ async function handleCommand(event, rawText) {
       return true;
     }
 
-    await releaseGroupBinding(chatId);
+    const currentPlan = await ensurePlanDb(ownerId);
+    unbindGroupFromOwner(currentPlan, chatId);
+    await savePlan(currentPlan);
 
-    await replyText(event.replyToken, "本群已解除綁定，並清除群組綁定資料。");
+    await replyText(event.replyToken, "本群已解除綁定。");
     return true;
   }
 
@@ -2776,15 +2289,7 @@ async function handleCommand(event, rawText) {
     }
 
     const oldPlan = await getPlan(arg);
-    const nextPlan = createPaidPlanObject(
-      arg,
-      "limited_groups",
-      1,
-      30,
-      oldPlan,
-      { resetBoundGroups: true }
-    );
-
+    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan);
     await savePlan(nextPlan);
     await syncMemberToGoogleSheet({
       userId: arg,
@@ -2794,7 +2299,7 @@ async function handleCommand(event, rawText) {
 
     await replyText(
       event.replyToken,
-      `已開通 1群 / 30天（已清空舊綁定群）\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 1群 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -2886,26 +2391,6 @@ async function handleCommand(event, rawText) {
 
     const targetPlan = await getPlan(arg);
     await replyText(event.replyToken, buildPlanText(arg, targetPlan));
-    return true;
-  }
-
-  if (cmd === "/清空綁群") {
-    if (!superAdmin) {
-      await replyText(event.replyToken, "只有最高管理員可以操作。");
-      return true;
-    }
-
-    if (!arg) {
-      await replyText(event.replyToken, "用法：/清空綁群 使用者ID");
-      return true;
-    }
-
-    const result = await clearAllBindingsByUserId(arg);
-
-    await replyText(
-      event.replyToken,
-      `已清空使用者綁群資料\n使用者：${arg}\n清除群數：${result.clearedGroups}`
-    );
     return true;
   }
 
@@ -3035,20 +2520,17 @@ async function handleTextMessage(event) {
         targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
       }
 
-      let translatedMap = {};
-
-      try {
-        translatedMap = await translateToTargets(text, targetLangs);
-      } catch (err) {
-        console.error("translateToTargets private error:", err);
-        translatedMap = {};
-      }
-
-      const results = targetLangs.map((lang) => {
-        const translated = translatedMap?.[lang] || "";
-        if (!translated) return null;
-        return safeTranslatedLine(lang, translated);
-      });
+      const results = await Promise.all(
+        targetLangs.map(async (lang) => {
+          try {
+            const translated = await translateToTarget(text, lang);
+            return safeTranslatedLine(lang, translated);
+          } catch (err) {
+            console.error(`translate ${lang} error:`, err);
+            return null;
+          }
+        })
+      );
 
       const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
@@ -3074,22 +2556,20 @@ async function handleTextMessage(event) {
       return;
     }
 
-    let translatedMap = {};
-
-    try {
-      translatedMap = await translateToTargets(text, langsToTranslate);
-    } catch (err) {
-      console.error("translateToTargets group error:", err);
-      translatedMap = {};
-    }
-
-    const results = langsToTranslate.map((lang) => {
-      const translated = translatedMap?.[lang] || "";
-      return (
-        safeTranslatedLine(lang, translated) ||
-        `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-      );
-    });
+    const results = await Promise.all(
+      langsToTranslate.map(async (lang) => {
+        try {
+          const translated = await translateToTarget(text, lang);
+          return (
+            safeTranslatedLine(lang, translated) ||
+            `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
+          );
+        } catch (err) {
+          console.error(`translate ${lang} error:`, err);
+          return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
+        }
+      })
+    );
 
     const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
@@ -3125,16 +2605,6 @@ async function handleEvent(event) {
 
     if (event.type === "follow") {
       await handleFollow(event);
-      return;
-    }
-
-    if (event.type === "memberLeft") {
-      await handleMemberLeft(event);
-      return;
-    }
-
-    if (event.type === "leave") {
-      await handleLeave(event);
       return;
     }
 
