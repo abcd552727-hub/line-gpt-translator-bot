@@ -30,12 +30,12 @@ const {
 
 const OPENAI_TIMEOUT_MS = Math.max(
   5000,
-  Number(process.env.OPENAI_TIMEOUT_MS || 15000)
+  Number(process.env.OPENAI_TIMEOUT_MS || 60000)
 );
 
 const OPENAI_MAX_RETRIES = Math.max(
   0,
-  Number(process.env.OPENAI_MAX_RETRIES || 1)
+  Number(process.env.OPENAI_MAX_RETRIES || 2)
 );
 
 const WEBHOOK_EVENT_CONCURRENCY = Math.max(
@@ -46,6 +46,16 @@ const WEBHOOK_EVENT_CONCURRENCY = Math.max(
 const MAX_TRANSLATION_RETRIES = Math.max(
   0,
   Number(process.env.MAX_TRANSLATION_RETRIES || 1)
+);
+
+const MEMORY_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.MEMORY_CACHE_TTL_MS || 10 * 60 * 1000)
+);
+
+const MEMORY_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.MEMORY_CACHE_MAX_ITEMS || 5000)
 );
 
 const LOG_TIMING = process.env.LOG_TIMING !== "0";
@@ -65,7 +75,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v7";
+const CACHE_VERSION = "v8";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -95,7 +105,7 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "ไม่นะครับ": "不是喔",
   "ไม่ใช่ค่ะ": "不是喔",
   "ไม่ใช่คะ": "不是喔",
-  "不ใช่ครับ": "不是喔",
+  "ไม่ใช่ครับ": "不是喔",
   "ได้ค่ะ": "可以喔",
   "ได้คะ": "可以喔",
   "ได้ครับ": "可以喔",
@@ -112,7 +122,7 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "มาไหม": "要來嗎",
   "ไม่เป็นไร": "沒關係",
   "ไม่เป็นไรค่ะ": "沒關係",
-  "不เป็นไรครับ": "沒關係",
+  "ไม่เป็นไรครับ": "沒關係",
   "ยัง": "還沒",
   "ยังคะ": "還沒喔",
   "ยังค่ะ": "還沒喔",
@@ -147,6 +157,8 @@ const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+const memoryTranslationCache = new Map();
 
 const LANG_LABELS = {
   "zh-TW": "繁體中文",
@@ -360,7 +372,7 @@ function cleanupTranslation(text = "") {
   return String(text || "")
     .replace(/^\s*翻譯[:：]\s*/i, "")
     .replace(/^\s*translation[:：]\s*/i, "")
-    .replace(/^["「『]+|["」』]+$/g, "")
+    .replace(/^["「『`]+|["」』`]+$/g, "")
     .trim();
 }
 
@@ -489,7 +501,7 @@ function looksLikeThaiShortChat(text = "") {
 
   return (
     isVeryShortText(t) ||
-    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|不|ไม่ครับ|ไม่เอา|เอา)$/.test(
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
       t
     )
   );
@@ -614,6 +626,129 @@ function parsePositiveInt(value, defaultValue = 1) {
   return num;
 }
 
+function getMemoryTranslationCache(cacheKey) {
+  const item = memoryTranslationCache.get(cacheKey);
+  if (!item) return null;
+
+  if (item.expiresAt <= Date.now()) {
+    memoryTranslationCache.delete(cacheKey);
+    return null;
+  }
+
+  memoryTranslationCache.delete(cacheKey);
+  memoryTranslationCache.set(cacheKey, item);
+  return item.value;
+}
+
+function setMemoryTranslationCache(cacheKey, value) {
+  if (!cacheKey || !value) return;
+
+  if (memoryTranslationCache.has(cacheKey)) {
+    memoryTranslationCache.delete(cacheKey);
+  }
+
+  memoryTranslationCache.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + MEMORY_CACHE_TTL_MS,
+  });
+
+  while (memoryTranslationCache.size > MEMORY_CACHE_MAX_ITEMS) {
+    const oldestKey = memoryTranslationCache.keys().next().value;
+    if (!oldestKey) break;
+    memoryTranslationCache.delete(oldestKey);
+  }
+}
+
+function extractResponseText(response) {
+  if (typeof response?.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+
+  const texts = [];
+
+  for (const item of response?.output || []) {
+    for (const content of item?.content || []) {
+      if (content?.type === "output_text" && content?.text) {
+        texts.push(content.text);
+      } else if (content?.type === "text" && content?.text) {
+        texts.push(content.text);
+      }
+    }
+  }
+
+  return texts.join("\n").trim();
+}
+
+function buildSpecialHintForTarget(text, targetLang) {
+  const thaiShortChat = looksLikeThaiShortChat(text);
+  const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
+  const targetName = getLangPureName(targetLang);
+
+  let specialHint = "";
+
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
+  }
+
+  if (targetLang === "th") {
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
+  }
+
+  if (targetLang === "zh-TW") {
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+  }
+
+  if (targetLang === "zh-CN") {
+    specialHint += " 請輸出自然简体中文。";
+  }
+
+  if (targetLang === "en") {
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
+  }
+
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
+    specialHint += `
+這段很可能是泰文短句、聊天句、口語或方言，請翻成自然${targetName}對話。
+
+重要規則：
+1. 所有泰文都必須翻成中文，不可殘留任何泰文字
+2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
+3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
+4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
+5. 像「ยัง / ยังค่ะ / ยังครับ」這類短句非常依賴上下文：
+- 若是在回答別人的問題，通常翻成「還沒 / 還沒喔」
+- 若是在追問進度或狀態，依語境翻成「還沒嗎？/ 還在嗎？/ 還有嗎？/ 好了嗎？」
+- 不可直譯成不自然的「還嗎」
+6. 不可逐字硬翻，要翻成自然聊天中文
+
+${
+  allowOriginalTerm
+    ? "若固定術語表指定保留原詞，只有該固定詞可保留原樣，其餘泰文仍必須翻成中文。"
+    : `輸出必須是純${targetName}。`
+}
+    `.trim();
+  }
+
+  return specialHint.trim();
+}
+
 function buildStablePrompt({
   text,
   targetLang,
@@ -655,6 +790,78 @@ ${text}
   `.trim();
 }
 
+function buildMultiTargetPrompt({ text, sourceHint = "auto", items = [] }) {
+  const fixedTermsHint = buildFixedTermsHint(text);
+  const contextTypoHint = buildContextTypoHint(text);
+  const keys = items.map((item) => item.lang);
+
+  return `
+你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
+
+請把同一段內容翻成多個目標語言。
+只輸出嚴格 JSON 物件。
+不可輸出 markdown，不可加程式碼區塊，不可加說明，不可加前後文。
+
+輸出必須包含這些 key：
+${keys.join(", ")}
+
+輸出格式範例：
+{"zh-TW":"...","en":"...","th":"..."}
+
+全局翻譯規則：
+1. 忠實保留原意，不增加、不刪減
+2. 用自然口語表達，不要生硬直譯
+3. 短句、聊天句、口語、省略句，要依對話情境自然翻譯
+4. 若來源語言與目標語言不同，不可原樣照抄原文
+5. 若目標語言是中文，輸出必須是純中文，不可殘留泰文語氣詞，例如「คะ / ค่ะ / ครับ」
+6. 若目標語言是泰文，輸出必須是純泰文，不可混入中文
+7. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
+8. 若有固定術語，必須完全遵守，不可自行改寫
+9. 不可重複原文，不可把原文和翻譯一起輸出
+10. 每個 JSON value 只能放該語言的最終翻譯結果
+
+來源語言提示：${sourceHint}
+
+${fixedTermsHint || ""}
+${contextTypoHint || ""}
+
+各目標語言要求：
+${items
+  .map(
+    (item) =>
+      `[${item.lang} | ${getLangPureName(item.lang)}]\n${item.specialHint || "依一般規則翻譯。"}`
+  )
+  .join("\n\n")}
+
+內容：
+${text}
+  `.trim();
+}
+
+function extractJsonObject(text = "") {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const stripped = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(stripped);
+  } catch (_) {}
+
+  const match = stripped.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch (_) {}
+  }
+
+  return null;
+}
+
 function buildCacheKey({
   text,
   targetLang,
@@ -689,12 +896,20 @@ async function getTranslationCache({
     specialHint,
   });
 
+  const memoryHit = getMemoryTranslationCache(cacheKey);
+  if (memoryHit) return memoryHit;
+
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
     [cacheKey]
   );
 
-  return result.rows?.[0]?.translated_text || null;
+  const value = result.rows?.[0]?.translated_text || null;
+  if (value) {
+    setMemoryTranslationCache(cacheKey, value);
+  }
+
+  return value;
 }
 
 async function saveTranslationCache({
@@ -710,6 +925,8 @@ async function saveTranslationCache({
     sourceHint,
     specialHint,
   });
+
+  setMemoryTranslationCache(cacheKey, translatedText);
 
   await pool.query(
     `
@@ -727,6 +944,78 @@ async function saveTranslationCache({
       translatedText,
     ]
   );
+}
+
+async function getTranslationCacheMultiItems({ text, items = [] }) {
+  const resultMap = {};
+  const pending = [];
+
+  for (const item of items) {
+    const cacheKey = buildCacheKey({
+      text,
+      targetLang: item.lang,
+      sourceHint: item.sourceHint || "auto",
+      specialHint: item.specialHint || "",
+    });
+
+    const memoryHit = getMemoryTranslationCache(cacheKey);
+    if (memoryHit) {
+      resultMap[item.lang] = memoryHit;
+      continue;
+    }
+
+    pending.push({ ...item, cacheKey });
+  }
+
+  if (!pending.length) return resultMap;
+
+  const dbResult = await pool.query(
+    `
+    SELECT cache_key, translated_text
+    FROM translation_cache
+    WHERE cache_key = ANY($1::text[])
+    `,
+    [pending.map((item) => item.cacheKey)]
+  );
+
+  const byKey = new Map(
+    (dbResult.rows || []).map((row) => [row.cache_key, row.translated_text])
+  );
+
+  for (const item of pending) {
+    const value = byKey.get(item.cacheKey);
+    if (value) {
+      resultMap[item.lang] = value;
+      setMemoryTranslationCache(item.cacheKey, value);
+    }
+  }
+
+  return resultMap;
+}
+
+async function saveTranslationCacheMultiItems({
+  text,
+  items = [],
+  translations = {},
+}) {
+  const tasks = [];
+
+  for (const item of items) {
+    const translatedText = cleanupTranslation(translations[item.lang] || "");
+    if (!translatedText) continue;
+
+    tasks.push(
+      saveTranslationCache({
+        text,
+        translatedText,
+        targetLang: item.lang,
+        sourceHint: item.sourceHint || "auto",
+        specialHint: item.specialHint || "",
+      })
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 async function askModelTranslate({
@@ -757,33 +1046,129 @@ async function askModelTranslate({
     specialHint,
   });
 
+  let response;
   const openaiStart = Date.now();
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    input: prompt,
-  });
+
+  try {
+    response = await openai.responses.create({
+      model: OPENAI_MODEL,
+      input: prompt,
+    });
+  } catch (err) {
+    console.error("OpenAI request error =", {
+      model: OPENAI_MODEL,
+      targetLang,
+      sourceHint,
+      status: err?.status,
+      code: err?.code,
+      name: err?.name,
+      message: err?.message,
+    });
+    if (err?.stack) console.error(err.stack);
+    throw err;
+  }
+
   logTiming(
     "openai_responses_create",
     openaiStart,
     `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
   );
 
-  const output = cleanupTranslation(response.output_text || "");
+  const rawText = extractResponseText(response);
+  const output = cleanupTranslation(rawText);
 
-  if (output) {
-    const cacheSaveStart = Date.now();
-    await saveTranslationCache({
-      text,
-      translatedText: output,
-      targetLang,
-      sourceHint,
-      specialHint,
-    });
-    logTiming("translation_cache_save", cacheSaveStart, `target=${targetLang}`);
+  if (!output) {
+    console.error(
+      "OpenAI empty output =",
+      JSON.stringify(
+        {
+          model: response?.model,
+          id: response?.id,
+          status: response?.status,
+          output: response?.output,
+          usage: response?.usage,
+        },
+        null,
+        2
+      )
+    );
+    throw new Error("OpenAI returned empty output");
   }
 
+  const cacheSaveStart = Date.now();
+  void saveTranslationCache({
+    text,
+    translatedText: output,
+    targetLang,
+    sourceHint,
+    specialHint,
+  })
+    .then(() => {
+      logTiming("translation_cache_save", cacheSaveStart, `target=${targetLang}`);
+    })
+    .catch((cacheErr) => {
+      console.error("translation_cache_save error =", cacheErr);
+      if (cacheErr?.stack) console.error(cacheErr.stack);
+    });
+
   return output;
+}
+
+async function askModelTranslateMulti({
+  text,
+  items = [],
+  sourceHint = "auto",
+}) {
+  if (!items.length) return {};
+
+  const prompt = buildMultiTargetPrompt({
+    text,
+    sourceHint,
+    items,
+  });
+
+  let response;
+  const openaiStart = Date.now();
+
+  try {
+    response = await openai.responses.create({
+      model: OPENAI_MODEL,
+      input: prompt,
+    });
+  } catch (err) {
+    console.error("OpenAI multi request error =", {
+      model: OPENAI_MODEL,
+      targetLangs: items.map((x) => x.lang),
+      sourceHint,
+      status: err?.status,
+      code: err?.code,
+      name: err?.name,
+      message: err?.message,
+    });
+    if (err?.stack) console.error(err.stack);
+    throw err;
+  }
+
+  logTiming(
+    "openai_responses_create_multi",
+    openaiStart,
+    `targets=${items.map((x) => x.lang).join(",")} model=${OPENAI_MODEL} chars=${String(text || "").length}`
+  );
+
+  const rawText = extractResponseText(response);
+  const json = extractJsonObject(rawText);
+
+  if (!json || typeof json !== "object") {
+    console.error("Invalid multi-translation JSON raw =", rawText);
+    throw new Error(`Invalid multi-translation JSON`);
+  }
+
+  const result = {};
+  for (const item of items) {
+    result[item.lang] = cleanupTranslation(json[item.lang] || "");
+  }
+
+  return result;
 }
 
 async function verifyPlaceNameOnline(text) {
@@ -834,11 +1219,8 @@ async function translateToTarget(text, targetLang) {
   const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
-  const mixedZhTh = isMixedChineseThai(text);
-  const namedEntityShort = looksLikeNamedEntityShortText(text);
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
-  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
   const allowWholeOriginalText = fixedTerms.some(
     (item) => item.target === item.src && isSameText(text, item.src)
   );
@@ -854,40 +1236,7 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  let specialHint = "";
-
-  if (fixedTerms.length) {
-    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
-  }
-
-  if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
-  }
-
-  if (mixedZhTh) {
-    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
-  }
-
-  if (namedEntityShort) {
-    specialHint +=
-      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
-  }
-
-  if (targetLang === "th") {
-    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
-  }
-
-  if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
-  }
-
-  if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。";
-  }
-
-  if (targetLang === "en") {
-    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
-  }
+  const specialHint = buildSpecialHintForTarget(text, targetLang);
 
   const askOnce = async (extraHint = "") => {
     return await askModelTranslate({
@@ -969,6 +1318,179 @@ async function translateToTarget(text, targetLang) {
   }
 
   return cleanupTranslation(output);
+}
+
+function isInvalidTranslatedOutput({
+  text,
+  output,
+  targetLang,
+  sourceLang,
+  fixedTerms = [],
+}) {
+  const clean = cleanupTranslation(output);
+  if (!clean) return true;
+
+  const allowWholeOriginalText = fixedTerms.some(
+    (item) => item.target === item.src && isSameText(text, item.src)
+  );
+
+  const sameAsInput =
+    sourceLang !== targetLang &&
+    !allowWholeOriginalText &&
+    isSameText(clean, text);
+
+  const wrongScript = hasWrongScriptForTarget(clean, targetLang, fixedTerms);
+
+  return sameAsInput || wrongScript;
+}
+
+async function translateToTargetsFast(text, targetLangs = []) {
+  const sourceLang = detectSourceLangSimple(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  const langs = normalizeLangList(targetLangs).filter(
+    (lang) => lang !== sourceLang
+  );
+
+  if (!langs.length) return {};
+
+  const results = {};
+  const items = [];
+
+  for (const lang of langs) {
+    const direct =
+      lang === "zh-TW" || lang === "zh-CN"
+        ? getDirectThaiShortChinese(text, lang)
+        : null;
+
+    if (direct) {
+      results[lang] = cleanupTranslation(direct);
+      continue;
+    }
+
+    items.push({
+      lang,
+      sourceHint: sourceLang,
+      specialHint: buildSpecialHintForTarget(text, lang),
+    });
+  }
+
+  const cacheReadStart = Date.now();
+  const cachedMap = await getTranslationCacheMultiItems({ text, items });
+  logTiming(
+    "translation_cache_read_multi",
+    cacheReadStart,
+    `targets=${items.length} hits=${Object.keys(cachedMap).length}`
+  );
+
+  for (const item of items) {
+    if (cachedMap[item.lang]) {
+      results[item.lang] = cleanupTranslation(cachedMap[item.lang]);
+    }
+  }
+
+  const missingItems = items.filter((item) => !results[item.lang]);
+
+  if (missingItems.length) {
+    let batchOutputs = {};
+
+    try {
+      batchOutputs = await askModelTranslateMulti({
+        text,
+        items: missingItems,
+        sourceHint: sourceLang,
+      });
+    } catch (err) {
+      console.error("askModelTranslateMulti error =", {
+        message: err?.message,
+        status: err?.status,
+        code: err?.code,
+        name: err?.name,
+      });
+      if (err?.stack) console.error(err.stack);
+    }
+
+    const toSave = {};
+
+    for (const item of missingItems) {
+      const value = cleanupTranslation(batchOutputs[item.lang] || "");
+      if (!value) continue;
+      results[item.lang] = value;
+      toSave[item.lang] = value;
+    }
+
+    if (Object.keys(toSave).length) {
+      const cacheSaveStart = Date.now();
+      void saveTranslationCacheMultiItems({
+        text,
+        items: missingItems,
+        translations: toSave,
+      })
+        .then(() => {
+          logTiming(
+            "translation_cache_save_multi",
+            cacheSaveStart,
+            `targets=${Object.keys(toSave).join(",")}`
+          );
+        })
+        .catch((cacheErr) => {
+          console.error("saveTranslationCacheMultiItems error =", cacheErr);
+          if (cacheErr?.stack) console.error(cacheErr.stack);
+        });
+    }
+  }
+
+  const fallbackItems = [];
+
+  for (const lang of langs) {
+    let value = cleanupTranslation(results[lang] || "");
+
+    if (lang === "zh-TW" || lang === "zh-CN") {
+      value = cleanupResidualThaiInChinese(value, fixedTerms);
+    }
+
+    if (
+      isInvalidTranslatedOutput({
+        text,
+        output: value,
+        targetLang: lang,
+        sourceLang,
+        fixedTerms,
+      })
+    ) {
+      fallbackItems.push(lang);
+      continue;
+    }
+
+    results[lang] = value;
+  }
+
+  if (fallbackItems.length) {
+    const fallbackResults = await Promise.all(
+      fallbackItems.map(async (lang) => {
+        try {
+          const translated = await translateToTarget(text, lang);
+          return [lang, translated];
+        } catch (err) {
+          console.error(`fallback translate ${lang} error =`, {
+            message: err?.message,
+            status: err?.status,
+            code: err?.code,
+            name: err?.name,
+          });
+          if (err?.stack) console.error(err.stack);
+          return [lang, ""];
+        }
+      })
+    );
+
+    for (const [lang, translated] of fallbackResults) {
+      if (!translated) continue;
+      results[lang] = cleanupTranslation(translated);
+    }
+  }
+
+  return results;
 }
 
 function parsePostbackData(data) {
@@ -1528,7 +2050,7 @@ async function fetchUserProfileFromApiByUserId(userId) {
       picture_url: p?.pictureUrl || "",
       status_message: p?.statusMessage || "",
     };
-  } catch (err) {
+  } catch (_err) {
     return null;
   }
 }
@@ -1565,7 +2087,7 @@ async function fetchUserProfileFromEvent(event) {
       picture_url: p?.pictureUrl || "",
       status_message: p?.statusMessage || "",
     };
-  } catch (err) {
+  } catch (_err) {
     const fallback = await fetchUserProfileFromApiByUserId(userId);
     return fallback;
   }
@@ -2432,7 +2954,6 @@ async function handleTextMessage(event) {
     }
 
     const chatType = getChatType(event);
-
     const group = await ensureGroupDb(chatId);
 
     let actingPlan = null;
@@ -2520,19 +3041,13 @@ async function handleTextMessage(event) {
         targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
       }
 
-      const results = await Promise.all(
-        targetLangs.map(async (lang) => {
-          try {
-            const translated = await translateToTarget(text, lang);
-            return safeTranslatedLine(lang, translated);
-          } catch (err) {
-            console.error(`translate ${lang} error:`, err);
-            return null;
-          }
-        })
-      );
+      const translatedMap = await translateToTargetsFast(text, targetLangs);
 
-      const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
+      const outputs = dedupeTranslatedOutputs(
+        targetLangs
+          .map((lang) => safeTranslatedLine(lang, translatedMap[lang]))
+          .filter(Boolean)
+      );
 
       if (!outputs.length) {
         await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
@@ -2556,22 +3071,17 @@ async function handleTextMessage(event) {
       return;
     }
 
-    const results = await Promise.all(
-      langsToTranslate.map(async (lang) => {
-        try {
-          const translated = await translateToTarget(text, lang);
-          return (
-            safeTranslatedLine(lang, translated) ||
-            `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-          );
-        } catch (err) {
-          console.error(`translate ${lang} error:`, err);
-          return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
-        }
+    const translatedMap = await translateToTargetsFast(text, langsToTranslate);
+
+    const outputs = dedupeTranslatedOutputs(
+      langsToTranslate.map((lang) => {
+        const translated = translatedMap[lang];
+        return (
+          safeTranslatedLine(lang, translated) ||
+          `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
+        );
       })
     );
-
-    const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
     if (!outputs.length) {
       return;
@@ -2702,6 +3212,9 @@ initDb()
       );
       console.log(
         `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
+      );
+      console.log(
+        `Memory cache ttl=${MEMORY_CACHE_TTL_MS}ms, maxItems=${MEMORY_CACHE_MAX_ITEMS}`
       );
     });
   })
