@@ -38,6 +38,11 @@ const OPENAI_MAX_RETRIES = Math.max(
   Number(process.env.OPENAI_MAX_RETRIES || 2)
 );
 
+const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
+  160,
+  Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 800)
+);
+
 const WEBHOOK_EVENT_CONCURRENCY = Math.max(
   1,
   Number(process.env.WEBHOOK_EVENT_CONCURRENCY || 3)
@@ -58,6 +63,16 @@ const MEMORY_CACHE_MAX_ITEMS = Math.max(
   Number(process.env.MEMORY_CACHE_MAX_ITEMS || 5000)
 );
 
+const META_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.META_CACHE_TTL_MS || 30 * 1000)
+);
+
+const META_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.META_CACHE_MAX_ITEMS || 3000)
+);
+
 const LOG_TIMING = process.env.LOG_TIMING !== "0";
 
 const missingVars = [];
@@ -75,7 +90,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9-safe-speed";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -158,7 +173,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-const memoryTranslationCache = new Map();
+const translationMemoryCache = new Map();
+const groupMemoryCache = new Map();
+const planMemoryCache = new Map();
 
 const LANG_LABELS = {
   "zh-TW": "繁體中文",
@@ -372,7 +389,7 @@ function cleanupTranslation(text = "") {
   return String(text || "")
     .replace(/^\s*翻譯[:：]\s*/i, "")
     .replace(/^\s*translation[:：]\s*/i, "")
-    .replace(/^["「『`]+|["」』`]+$/g, "")
+    .replace(/^["「『]+|["」』]+$/g, "")
     .trim();
 }
 
@@ -626,37 +643,64 @@ function parsePositiveInt(value, defaultValue = 1) {
   return num;
 }
 
-function getMemoryTranslationCache(cacheKey) {
-  const item = memoryTranslationCache.get(cacheKey);
+function getMaxOutputTokensForTranslate(text = "") {
+  const byLength = Math.ceil(String(text || "").length * 2.5);
+  return Math.max(160, Math.min(OPENAI_MAX_OUTPUT_TOKENS, byLength));
+}
+
+function getLruCacheValue(map, key) {
+  const item = map.get(key);
   if (!item) return null;
 
   if (item.expiresAt <= Date.now()) {
-    memoryTranslationCache.delete(cacheKey);
+    map.delete(key);
     return null;
   }
 
-  memoryTranslationCache.delete(cacheKey);
-  memoryTranslationCache.set(cacheKey, item);
+  map.delete(key);
+  map.set(key, item);
   return item.value;
 }
 
-function setMemoryTranslationCache(cacheKey, value) {
-  if (!cacheKey || !value) return;
+function setLruCacheValue(map, key, value, ttlMs, maxItems) {
+  if (!key || value == null) return;
 
-  if (memoryTranslationCache.has(cacheKey)) {
-    memoryTranslationCache.delete(cacheKey);
+  if (map.has(key)) {
+    map.delete(key);
   }
 
-  memoryTranslationCache.set(cacheKey, {
+  map.set(key, {
     value,
-    expiresAt: Date.now() + MEMORY_CACHE_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
   });
 
-  while (memoryTranslationCache.size > MEMORY_CACHE_MAX_ITEMS) {
-    const oldestKey = memoryTranslationCache.keys().next().value;
+  while (map.size > maxItems) {
+    const oldestKey = map.keys().next().value;
     if (!oldestKey) break;
-    memoryTranslationCache.delete(oldestKey);
+    map.delete(oldestKey);
   }
+}
+
+function getTranslationMemoryCache(cacheKey) {
+  return getLruCacheValue(translationMemoryCache, cacheKey);
+}
+
+function setTranslationMemoryCache(cacheKey, value) {
+  setLruCacheValue(
+    translationMemoryCache,
+    cacheKey,
+    value,
+    MEMORY_CACHE_TTL_MS,
+    MEMORY_CACHE_MAX_ITEMS
+  );
+}
+
+function getMetaCache(map, key) {
+  return getLruCacheValue(map, key);
+}
+
+function setMetaCache(map, key, value) {
+  setLruCacheValue(map, key, value, META_CACHE_TTL_MS, META_CACHE_MAX_ITEMS);
 }
 
 function extractResponseText(response) {
@@ -677,76 +721,6 @@ function extractResponseText(response) {
   }
 
   return texts.join("\n").trim();
-}
-
-function buildSpecialHintForTarget(text, targetLang) {
-  const thaiShortChat = looksLikeThaiShortChat(text);
-  const thaiDialect = looksLikeThaiDialectText(text);
-  const mixedZhTh = isMixedChineseThai(text);
-  const namedEntityShort = looksLikeNamedEntityShortText(text);
-  const fixedTerms = getMatchedFixedTerms(text);
-  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
-  const targetName = getLangPureName(targetLang);
-
-  let specialHint = "";
-
-  if (fixedTerms.length) {
-    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
-  }
-
-  if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
-  }
-
-  if (mixedZhTh) {
-    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
-  }
-
-  if (namedEntityShort) {
-    specialHint +=
-      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
-  }
-
-  if (targetLang === "th") {
-    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
-  }
-
-  if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
-  }
-
-  if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文。";
-  }
-
-  if (targetLang === "en") {
-    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
-  }
-
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && (thaiShortChat || thaiDialect)) {
-    specialHint += `
-這段很可能是泰文短句、聊天句、口語或方言，請翻成自然${targetName}對話。
-
-重要規則：
-1. 所有泰文都必須翻成中文，不可殘留任何泰文字
-2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
-3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
-4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
-5. 像「ยัง / ยังค่ะ / ยังครับ」這類短句非常依賴上下文：
-- 若是在回答別人的問題，通常翻成「還沒 / 還沒喔」
-- 若是在追問進度或狀態，依語境翻成「還沒嗎？/ 還在嗎？/ 還有嗎？/ 好了嗎？」
-- 不可直譯成不自然的「還嗎」
-6. 不可逐字硬翻，要翻成自然聊天中文
-
-${
-  allowOriginalTerm
-    ? "若固定術語表指定保留原詞，只有該固定詞可保留原樣，其餘泰文仍必須翻成中文。"
-    : `輸出必須是純${targetName}。`
-}
-    `.trim();
-  }
-
-  return specialHint.trim();
 }
 
 function buildStablePrompt({
@@ -790,78 +764,6 @@ ${text}
   `.trim();
 }
 
-function buildMultiTargetPrompt({ text, sourceHint = "auto", items = [] }) {
-  const fixedTermsHint = buildFixedTermsHint(text);
-  const contextTypoHint = buildContextTypoHint(text);
-  const keys = items.map((item) => item.lang);
-
-  return `
-你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
-
-請把同一段內容翻成多個目標語言。
-只輸出嚴格 JSON 物件。
-不可輸出 markdown，不可加程式碼區塊，不可加說明，不可加前後文。
-
-輸出必須包含這些 key：
-${keys.join(", ")}
-
-輸出格式範例：
-{"zh-TW":"...","en":"...","th":"..."}
-
-全局翻譯規則：
-1. 忠實保留原意，不增加、不刪減
-2. 用自然口語表達，不要生硬直譯
-3. 短句、聊天句、口語、省略句，要依對話情境自然翻譯
-4. 若來源語言與目標語言不同，不可原樣照抄原文
-5. 若目標語言是中文，輸出必須是純中文，不可殘留泰文語氣詞，例如「คะ / ค่ะ / ครับ」
-6. 若目標語言是泰文，輸出必須是純泰文，不可混入中文
-7. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
-8. 若有固定術語，必須完全遵守，不可自行改寫
-9. 不可重複原文，不可把原文和翻譯一起輸出
-10. 每個 JSON value 只能放該語言的最終翻譯結果
-
-來源語言提示：${sourceHint}
-
-${fixedTermsHint || ""}
-${contextTypoHint || ""}
-
-各目標語言要求：
-${items
-  .map(
-    (item) =>
-      `[${item.lang} | ${getLangPureName(item.lang)}]\n${item.specialHint || "依一般規則翻譯。"}`
-  )
-  .join("\n\n")}
-
-內容：
-${text}
-  `.trim();
-}
-
-function extractJsonObject(text = "") {
-  const raw = String(text || "").trim();
-  if (!raw) return null;
-
-  const stripped = raw
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  try {
-    return JSON.parse(stripped);
-  } catch (_) {}
-
-  const match = stripped.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch (_) {}
-  }
-
-  return null;
-}
-
 function buildCacheKey({
   text,
   targetLang,
@@ -896,7 +798,7 @@ async function getTranslationCache({
     specialHint,
   });
 
-  const memoryHit = getMemoryTranslationCache(cacheKey);
+  const memoryHit = getTranslationMemoryCache(cacheKey);
   if (memoryHit) return memoryHit;
 
   const result = await pool.query(
@@ -906,7 +808,7 @@ async function getTranslationCache({
 
   const value = result.rows?.[0]?.translated_text || null;
   if (value) {
-    setMemoryTranslationCache(cacheKey, value);
+    setTranslationMemoryCache(cacheKey, value);
   }
 
   return value;
@@ -926,7 +828,7 @@ async function saveTranslationCache({
     specialHint,
   });
 
-  setMemoryTranslationCache(cacheKey, translatedText);
+  setTranslationMemoryCache(cacheKey, translatedText);
 
   await pool.query(
     `
@@ -944,78 +846,6 @@ async function saveTranslationCache({
       translatedText,
     ]
   );
-}
-
-async function getTranslationCacheMultiItems({ text, items = [] }) {
-  const resultMap = {};
-  const pending = [];
-
-  for (const item of items) {
-    const cacheKey = buildCacheKey({
-      text,
-      targetLang: item.lang,
-      sourceHint: item.sourceHint || "auto",
-      specialHint: item.specialHint || "",
-    });
-
-    const memoryHit = getMemoryTranslationCache(cacheKey);
-    if (memoryHit) {
-      resultMap[item.lang] = memoryHit;
-      continue;
-    }
-
-    pending.push({ ...item, cacheKey });
-  }
-
-  if (!pending.length) return resultMap;
-
-  const dbResult = await pool.query(
-    `
-    SELECT cache_key, translated_text
-    FROM translation_cache
-    WHERE cache_key = ANY($1::text[])
-    `,
-    [pending.map((item) => item.cacheKey)]
-  );
-
-  const byKey = new Map(
-    (dbResult.rows || []).map((row) => [row.cache_key, row.translated_text])
-  );
-
-  for (const item of pending) {
-    const value = byKey.get(item.cacheKey);
-    if (value) {
-      resultMap[item.lang] = value;
-      setMemoryTranslationCache(item.cacheKey, value);
-    }
-  }
-
-  return resultMap;
-}
-
-async function saveTranslationCacheMultiItems({
-  text,
-  items = [],
-  translations = {},
-}) {
-  const tasks = [];
-
-  for (const item of items) {
-    const translatedText = cleanupTranslation(translations[item.lang] || "");
-    if (!translatedText) continue;
-
-    tasks.push(
-      saveTranslationCache({
-        text,
-        translatedText,
-        targetLang: item.lang,
-        sourceHint: item.sourceHint || "auto",
-        specialHint: item.specialHint || "",
-      })
-    );
-  }
-
-  await Promise.all(tasks);
 }
 
 async function askModelTranslate({
@@ -1053,6 +883,7 @@ async function askModelTranslate({
     response = await openai.responses.create({
       model: OPENAI_MODEL,
       input: prompt,
+      max_output_tokens: getMaxOutputTokensForTranslate(text),
     });
   } catch (err) {
     console.error("OpenAI request error =", {
@@ -1074,8 +905,7 @@ async function askModelTranslate({
     `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
   );
 
-  const rawText = extractResponseText(response);
-  const output = cleanupTranslation(rawText);
+  const output = cleanupTranslation(extractResponseText(response));
 
   if (!output) {
     console.error(
@@ -1112,63 +942,6 @@ async function askModelTranslate({
     });
 
   return output;
-}
-
-async function askModelTranslateMulti({
-  text,
-  items = [],
-  sourceHint = "auto",
-}) {
-  if (!items.length) return {};
-
-  const prompt = buildMultiTargetPrompt({
-    text,
-    sourceHint,
-    items,
-  });
-
-  let response;
-  const openaiStart = Date.now();
-
-  try {
-    response = await openai.responses.create({
-      model: OPENAI_MODEL,
-      input: prompt,
-    });
-  } catch (err) {
-    console.error("OpenAI multi request error =", {
-      model: OPENAI_MODEL,
-      targetLangs: items.map((x) => x.lang),
-      sourceHint,
-      status: err?.status,
-      code: err?.code,
-      name: err?.name,
-      message: err?.message,
-    });
-    if (err?.stack) console.error(err.stack);
-    throw err;
-  }
-
-  logTiming(
-    "openai_responses_create_multi",
-    openaiStart,
-    `targets=${items.map((x) => x.lang).join(",")} model=${OPENAI_MODEL} chars=${String(text || "").length}`
-  );
-
-  const rawText = extractResponseText(response);
-  const json = extractJsonObject(rawText);
-
-  if (!json || typeof json !== "object") {
-    console.error("Invalid multi-translation JSON raw =", rawText);
-    throw new Error(`Invalid multi-translation JSON`);
-  }
-
-  const result = {};
-  for (const item of items) {
-    result[item.lang] = cleanupTranslation(json[item.lang] || "");
-  }
-
-  return result;
 }
 
 async function verifyPlaceNameOnline(text) {
@@ -1219,6 +992,8 @@ async function translateToTarget(text, targetLang) {
   const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
   const allowWholeOriginalText = fixedTerms.some(
@@ -1236,7 +1011,40 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  const specialHint = buildSpecialHintForTarget(text, targetLang);
+  let specialHint = "";
+
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
+  }
+
+  if (targetLang === "th") {
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
+  }
+
+  if (targetLang === "zh-TW") {
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+  }
+
+  if (targetLang === "zh-CN") {
+    specialHint += " 請輸出自然简体中文。";
+  }
+
+  if (targetLang === "en") {
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
+  }
 
   const askOnce = async (extraHint = "") => {
     return await askModelTranslate({
@@ -1318,179 +1126,6 @@ async function translateToTarget(text, targetLang) {
   }
 
   return cleanupTranslation(output);
-}
-
-function isInvalidTranslatedOutput({
-  text,
-  output,
-  targetLang,
-  sourceLang,
-  fixedTerms = [],
-}) {
-  const clean = cleanupTranslation(output);
-  if (!clean) return true;
-
-  const allowWholeOriginalText = fixedTerms.some(
-    (item) => item.target === item.src && isSameText(text, item.src)
-  );
-
-  const sameAsInput =
-    sourceLang !== targetLang &&
-    !allowWholeOriginalText &&
-    isSameText(clean, text);
-
-  const wrongScript = hasWrongScriptForTarget(clean, targetLang, fixedTerms);
-
-  return sameAsInput || wrongScript;
-}
-
-async function translateToTargetsFast(text, targetLangs = []) {
-  const sourceLang = detectSourceLangSimple(text);
-  const fixedTerms = getMatchedFixedTerms(text);
-
-  const langs = normalizeLangList(targetLangs).filter(
-    (lang) => lang !== sourceLang
-  );
-
-  if (!langs.length) return {};
-
-  const results = {};
-  const items = [];
-
-  for (const lang of langs) {
-    const direct =
-      lang === "zh-TW" || lang === "zh-CN"
-        ? getDirectThaiShortChinese(text, lang)
-        : null;
-
-    if (direct) {
-      results[lang] = cleanupTranslation(direct);
-      continue;
-    }
-
-    items.push({
-      lang,
-      sourceHint: sourceLang,
-      specialHint: buildSpecialHintForTarget(text, lang),
-    });
-  }
-
-  const cacheReadStart = Date.now();
-  const cachedMap = await getTranslationCacheMultiItems({ text, items });
-  logTiming(
-    "translation_cache_read_multi",
-    cacheReadStart,
-    `targets=${items.length} hits=${Object.keys(cachedMap).length}`
-  );
-
-  for (const item of items) {
-    if (cachedMap[item.lang]) {
-      results[item.lang] = cleanupTranslation(cachedMap[item.lang]);
-    }
-  }
-
-  const missingItems = items.filter((item) => !results[item.lang]);
-
-  if (missingItems.length) {
-    let batchOutputs = {};
-
-    try {
-      batchOutputs = await askModelTranslateMulti({
-        text,
-        items: missingItems,
-        sourceHint: sourceLang,
-      });
-    } catch (err) {
-      console.error("askModelTranslateMulti error =", {
-        message: err?.message,
-        status: err?.status,
-        code: err?.code,
-        name: err?.name,
-      });
-      if (err?.stack) console.error(err.stack);
-    }
-
-    const toSave = {};
-
-    for (const item of missingItems) {
-      const value = cleanupTranslation(batchOutputs[item.lang] || "");
-      if (!value) continue;
-      results[item.lang] = value;
-      toSave[item.lang] = value;
-    }
-
-    if (Object.keys(toSave).length) {
-      const cacheSaveStart = Date.now();
-      void saveTranslationCacheMultiItems({
-        text,
-        items: missingItems,
-        translations: toSave,
-      })
-        .then(() => {
-          logTiming(
-            "translation_cache_save_multi",
-            cacheSaveStart,
-            `targets=${Object.keys(toSave).join(",")}`
-          );
-        })
-        .catch((cacheErr) => {
-          console.error("saveTranslationCacheMultiItems error =", cacheErr);
-          if (cacheErr?.stack) console.error(cacheErr.stack);
-        });
-    }
-  }
-
-  const fallbackItems = [];
-
-  for (const lang of langs) {
-    let value = cleanupTranslation(results[lang] || "");
-
-    if (lang === "zh-TW" || lang === "zh-CN") {
-      value = cleanupResidualThaiInChinese(value, fixedTerms);
-    }
-
-    if (
-      isInvalidTranslatedOutput({
-        text,
-        output: value,
-        targetLang: lang,
-        sourceLang,
-        fixedTerms,
-      })
-    ) {
-      fallbackItems.push(lang);
-      continue;
-    }
-
-    results[lang] = value;
-  }
-
-  if (fallbackItems.length) {
-    const fallbackResults = await Promise.all(
-      fallbackItems.map(async (lang) => {
-        try {
-          const translated = await translateToTarget(text, lang);
-          return [lang, translated];
-        } catch (err) {
-          console.error(`fallback translate ${lang} error =`, {
-            message: err?.message,
-            status: err?.status,
-            code: err?.code,
-            name: err?.name,
-          });
-          if (err?.stack) console.error(err.stack);
-          return [lang, ""];
-        }
-      })
-    );
-
-    for (const [lang, translated] of fallbackResults) {
-      if (!translated) continue;
-      results[lang] = cleanupTranslation(translated);
-    }
-  }
-
-  return results;
 }
 
 function parsePostbackData(data) {
@@ -1900,6 +1535,9 @@ async function initDb() {
 }
 
 async function getGroup(chatId) {
+  const memoryHit = getMetaCache(groupMemoryCache, chatId);
+  if (memoryHit) return memoryHit;
+
   const result = await pool.query(
     `SELECT chat_id, owner_id, langs, admins, tone_mode, created_at
      FROM group_subscriptions
@@ -1907,7 +1545,9 @@ async function getGroup(chatId) {
     [chatId]
   );
 
-  return result.rows[0] || null;
+  const value = result.rows[0] || null;
+  if (value) setMetaCache(groupMemoryCache, chatId, value);
+  return value;
 }
 
 async function ensureGroupDb(chatId) {
@@ -1950,16 +1590,23 @@ async function saveGroup(group) {
       JSON.stringify(group.admins || []),
     ]
   );
+
+  setMetaCache(groupMemoryCache, group.chat_id, group);
 }
 
 async function getPlan(userId) {
+  const memoryHit = getMetaCache(planMemoryCache, userId);
+  if (memoryHit) return memoryHit;
+
   const result = await pool.query(
     `SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, created_at, daily_limit, trial_type
      FROM plans
      WHERE user_id = $1`,
     [userId]
   );
-  return result.rows[0] || null;
+  const value = result.rows[0] || null;
+  if (value) setMetaCache(planMemoryCache, userId, value);
+  return value;
 }
 
 async function ensurePlanDb(userId) {
@@ -2004,6 +1651,8 @@ async function savePlan(plan) {
       plan.trial_type ?? null,
     ]
   );
+
+  setMetaCache(planMemoryCache, plan.user_id, plan);
 }
 
 async function getMemberProfileDb(userId) {
@@ -2251,33 +1900,35 @@ async function checkDailyLimit(userId, groupId, dailyLimit) {
   const today = new Date().toISOString().slice(0, 10);
 
   const result = await pool.query(
+    `
+    INSERT INTO usage_logs (user_id, group_id, date, count)
+    VALUES ($1, $2, $3, 1)
+    ON CONFLICT (user_id, group_id, date)
+    DO UPDATE SET count = usage_logs.count + 1
+    WHERE usage_logs.count < $4
+    RETURNING count
+    `,
+    [userId, groupId, today, dailyLimit]
+  );
+
+  if (result.rows.length > 0) {
+    return {
+      allowed: true,
+      used: result.rows[0].count,
+      limit: dailyLimit,
+    };
+  }
+
+  const current = await pool.query(
     `SELECT count FROM usage_logs WHERE user_id = $1 AND group_id = $2 AND date = $3`,
     [userId, groupId, today]
   );
 
-  if (result.rows.length === 0) {
-    await pool.query(
-      `INSERT INTO usage_logs (user_id, group_id, date, count)
-       VALUES ($1, $2, $3, 1)`,
-      [userId, groupId, today]
-    );
-    return { allowed: true, used: 1, limit: dailyLimit };
-  }
-
-  const currentCount = result.rows[0].count;
-
-  if (currentCount >= dailyLimit) {
-    return { allowed: false, used: currentCount, limit: dailyLimit };
-  }
-
-  await pool.query(
-    `UPDATE usage_logs
-     SET count = count + 1
-     WHERE user_id = $1 AND group_id = $2 AND date = $3`,
-    [userId, groupId, today]
-  );
-
-  return { allowed: true, used: currentCount + 1, limit: dailyLimit };
+  return {
+    allowed: false,
+    used: current.rows?.[0]?.count || dailyLimit,
+    limit: dailyLimit,
+  };
 }
 
 function isAdmin(group, userId) {
@@ -2954,6 +2605,7 @@ async function handleTextMessage(event) {
     }
 
     const chatType = getChatType(event);
+
     const group = await ensureGroupDb(chatId);
 
     let actingPlan = null;
@@ -3041,13 +2693,25 @@ async function handleTextMessage(event) {
         targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
       }
 
-      const translatedMap = await translateToTargetsFast(text, targetLangs);
-
-      const outputs = dedupeTranslatedOutputs(
-        targetLangs
-          .map((lang) => safeTranslatedLine(lang, translatedMap[lang]))
-          .filter(Boolean)
+      const results = await Promise.all(
+        targetLangs.map(async (lang) => {
+          try {
+            const translated = await translateToTarget(text, lang);
+            return safeTranslatedLine(lang, translated);
+          } catch (err) {
+            console.error(`translate ${lang} error =`, {
+              message: err?.message,
+              status: err?.status,
+              code: err?.code,
+              name: err?.name,
+            });
+            if (err?.stack) console.error(err.stack);
+            return null;
+          }
+        })
       );
+
+      const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
       if (!outputs.length) {
         await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
@@ -3071,17 +2735,28 @@ async function handleTextMessage(event) {
       return;
     }
 
-    const translatedMap = await translateToTargetsFast(text, langsToTranslate);
-
-    const outputs = dedupeTranslatedOutputs(
-      langsToTranslate.map((lang) => {
-        const translated = translatedMap[lang];
-        return (
-          safeTranslatedLine(lang, translated) ||
-          `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-        );
+    const results = await Promise.all(
+      langsToTranslate.map(async (lang) => {
+        try {
+          const translated = await translateToTarget(text, lang);
+          return (
+            safeTranslatedLine(lang, translated) ||
+            `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
+          );
+        } catch (err) {
+          console.error(`translate ${lang} error =`, {
+            message: err?.message,
+            status: err?.status,
+            code: err?.code,
+            name: err?.name,
+          });
+          if (err?.stack) console.error(err.stack);
+          return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
+        }
       })
     );
+
+    const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
     if (!outputs.length) {
       return;
@@ -3208,13 +2883,16 @@ initDb()
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(
-        `OpenAI model=${OPENAI_MODEL}, timeout=${OPENAI_TIMEOUT_MS}ms, retries=${OPENAI_MAX_RETRIES}`
+        `OpenAI model=${OPENAI_MODEL}, timeout=${OPENAI_TIMEOUT_MS}ms, retries=${OPENAI_MAX_RETRIES}, maxOutputTokens=${OPENAI_MAX_OUTPUT_TOKENS}`
       );
       console.log(
         `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
       );
       console.log(
-        `Memory cache ttl=${MEMORY_CACHE_TTL_MS}ms, maxItems=${MEMORY_CACHE_MAX_ITEMS}`
+        `Translation memory cache ttl=${MEMORY_CACHE_TTL_MS}ms, maxItems=${MEMORY_CACHE_MAX_ITEMS}`
+      );
+      console.log(
+        `Meta cache ttl=${META_CACHE_TTL_MS}ms, maxItems=${META_CACHE_MAX_ITEMS}`
       );
     });
   })
