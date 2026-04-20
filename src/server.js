@@ -90,7 +90,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v9-safe-speed";
+const CACHE_VERSION = "v10-stable-safe-fast";
 
 const FIXED_TERM_MAP = {
   "เหิงซุน": "เหิงซุน",
@@ -114,7 +114,7 @@ const CONTEXT_TYPO_MAP = [
 
 const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "ไม่ค่ะ": "不是喔",
-  "ไม่คะ": "不是喔",
+  "不คะ": "不是喔",
   "ไม่ครับ": "不是喔",
   "ไม่นะคะ": "不是喔",
   "ไม่นะครับ": "不是喔",
@@ -506,6 +506,25 @@ function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
   return translated;
 }
 
+function getDirectChineseToThai(text = "") {
+  const key = String(text || "").trim().replace(/\s+/g, "");
+  const map = {
+    "好": "โอเค",
+    "好喔": "โอเค",
+    "可以": "ได้",
+    "可以嗎": "ได้ไหม",
+    "在嗎": "อยู่ไหม",
+    "沒關係": "ไม่เป็นไร",
+    "還沒": "ยัง",
+    "還沒喔": "ยัง",
+    "還沒嗎": "ยังเหรอ",
+    "要來嗎": "มาไหม",
+    "是喔": "ใช่",
+    "不是喔": "ไม่ใช่",
+  };
+  return map[key] || null;
+}
+
 function isVeryShortText(text = "") {
   const cleaned = String(text || "").trim().replace(/\s+/g, "");
   return cleaned.length > 0 && cleaned.length <= 14;
@@ -764,11 +783,32 @@ ${text}
   `.trim();
 }
 
+function buildLitePrompt({
+  text,
+  targetLang,
+  sourceHint = "auto",
+}) {
+  const targetName = getLangPureName(targetLang);
+
+  return `
+你是翻譯員。
+請把下面內容翻成「${targetName}」。
+只輸出翻譯結果。
+不要解釋，不要重複原文，不要加前綴。
+
+來源語言提示：${sourceHint}
+
+內容：
+${text}
+  `.trim();
+}
+
 function buildCacheKey({
   text,
   targetLang,
   sourceHint = "auto",
   specialHint = "",
+  mode = "normal",
 }) {
   return crypto
     .createHash("sha1")
@@ -777,7 +817,7 @@ function buildCacheKey({
         CACHE_VERSION,
         String(sourceHint),
         String(targetLang),
-        "normal",
+        String(mode),
         String(specialHint),
         String(text),
       ].join("__")
@@ -790,12 +830,14 @@ async function getTranslationCache({
   targetLang,
   sourceHint = "auto",
   specialHint = "",
+  mode = "normal",
 }) {
   const cacheKey = buildCacheKey({
     text,
     targetLang,
     sourceHint,
     specialHint,
+    mode,
   });
 
   const memoryHit = getTranslationMemoryCache(cacheKey);
@@ -820,12 +862,14 @@ async function saveTranslationCache({
   targetLang,
   sourceHint = "auto",
   specialHint = "",
+  mode = "normal",
 }) {
   const cacheKey = buildCacheKey({
     text,
     targetLang,
     sourceHint,
     specialHint,
+    mode,
   });
 
   setTranslationMemoryCache(cacheKey, translatedText);
@@ -842,7 +886,7 @@ async function saveTranslationCache({
       text,
       targetLang,
       sourceHint,
-      "normal",
+      mode,
       translatedText,
     ]
   );
@@ -860,6 +904,7 @@ async function askModelTranslate({
     targetLang,
     sourceHint,
     specialHint,
+    mode: "normal",
   });
   logTiming(
     "translation_cache_read",
@@ -932,6 +977,7 @@ async function askModelTranslate({
     targetLang,
     sourceHint,
     specialHint,
+    mode: "normal",
   })
     .then(() => {
       logTiming("translation_cache_save", cacheSaveStart, `target=${targetLang}`);
@@ -940,6 +986,70 @@ async function askModelTranslate({
       console.error("translation_cache_save error =", cacheErr);
       if (cacheErr?.stack) console.error(cacheErr.stack);
     });
+
+  return output;
+}
+
+async function askModelTranslateLite({
+  text,
+  targetLang,
+  sourceHint = "auto",
+}) {
+  const cacheReadStart = Date.now();
+  const cached = await getTranslationCache({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint: "",
+    mode: "lite",
+  });
+
+  logTiming(
+    "translation_cache_read_lite",
+    cacheReadStart,
+    `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
+  );
+
+  if (cached) return cleanupTranslation(cached);
+
+  const prompt = buildLitePrompt({
+    text,
+    targetLang,
+    sourceHint,
+  });
+
+  const openaiStart = Date.now();
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    input: prompt,
+    max_output_tokens: Math.max(
+      80,
+      Math.min(300, getMaxOutputTokensForTranslate(text))
+    ),
+  });
+
+  logTiming(
+    "openai_responses_create_lite",
+    openaiStart,
+    `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
+  );
+
+  const output = cleanupTranslation(extractResponseText(response));
+  if (!output) {
+    throw new Error("OpenAI lite returned empty output");
+  }
+
+  void saveTranslationCache({
+    text,
+    translatedText: output,
+    targetLang,
+    sourceHint,
+    specialHint: "",
+    mode: "lite",
+  }).catch((cacheErr) => {
+    console.error("translation_cache_save lite error =", cacheErr);
+    if (cacheErr?.stack) console.error(cacheErr.stack);
+  });
 
   return output;
 }
@@ -986,6 +1096,22 @@ ${
 }
     `.trim(),
   });
+}
+
+function getRuleBasedFallback(text, targetLang) {
+  const sourceLang = detectSourceLangSimple(text);
+
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(text)) {
+    const direct = getDirectThaiShortChinese(text, targetLang);
+    if (direct) return direct;
+  }
+
+  if (targetLang === "th" && (sourceLang === "zh-TW" || sourceLang === "zh-CN")) {
+    const direct = getDirectChineseToThai(text);
+    if (direct) return direct;
+  }
+
+  return null;
 }
 
 async function translateToTarget(text, targetLang) {
@@ -1126,6 +1252,71 @@ async function translateToTarget(text, targetLang) {
   }
 
   return cleanupTranslation(output);
+}
+
+async function translateToTargetSafe(text, targetLang) {
+  const sourceLang = detectSourceLangSimple(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  try {
+    const result = await translateToTarget(text, targetLang);
+    const clean = cleanupTranslation(result);
+
+    if (clean && !hasWrongScriptForTarget(clean, targetLang, fixedTerms)) {
+      return clean;
+    }
+  } catch (err) {
+    console.error("translateToTarget main failed =", {
+      targetLang,
+      message: err?.message,
+      status: err?.status,
+      code: err?.code,
+      name: err?.name,
+    });
+    if (err?.stack) console.error(err.stack);
+  }
+
+  try {
+    const lite = await askModelTranslateLite({
+      text,
+      targetLang,
+      sourceHint: sourceLang,
+    });
+    const clean = cleanupTranslation(lite);
+
+    if (clean && !hasWrongScriptForTarget(clean, targetLang, fixedTerms)) {
+      if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+        return cleanupResidualThaiInChinese(clean, fixedTerms);
+      }
+      return clean;
+    }
+  } catch (err) {
+    console.error("translateToTarget lite failed =", {
+      targetLang,
+      message: err?.message,
+      status: err?.status,
+      code: err?.code,
+      name: err?.name,
+    });
+    if (err?.stack) console.error(err.stack);
+  }
+
+  try {
+    const rule = getRuleBasedFallback(text, targetLang);
+    const clean = cleanupTranslation(rule);
+    if (clean) return clean;
+  } catch (err) {
+    console.error("translateToTarget rule fallback failed =", {
+      targetLang,
+      message: err?.message,
+      status: err?.status,
+      code: err?.code,
+      name: err?.name,
+    });
+    if (err?.stack) console.error(err.stack);
+  }
+
+  return null;
 }
 
 function parsePostbackData(data) {
@@ -2605,7 +2796,6 @@ async function handleTextMessage(event) {
     }
 
     const chatType = getChatType(event);
-
     const group = await ensureGroupDb(chatId);
 
     let actingPlan = null;
@@ -2695,26 +2885,15 @@ async function handleTextMessage(event) {
 
       const results = await Promise.all(
         targetLangs.map(async (lang) => {
-          try {
-            const translated = await translateToTarget(text, lang);
-            return safeTranslatedLine(lang, translated);
-          } catch (err) {
-            console.error(`translate ${lang} error =`, {
-              message: err?.message,
-              status: err?.status,
-              code: err?.code,
-              name: err?.name,
-            });
-            if (err?.stack) console.error(err.stack);
-            return null;
-          }
+          const translated = await translateToTargetSafe(text, lang);
+          if (!translated) return null;
+          return safeTranslatedLine(lang, translated);
         })
       );
 
       const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
       if (!outputs.length) {
-        await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
         return;
       }
 
@@ -2737,22 +2916,9 @@ async function handleTextMessage(event) {
 
     const results = await Promise.all(
       langsToTranslate.map(async (lang) => {
-        try {
-          const translated = await translateToTarget(text, lang);
-          return (
-            safeTranslatedLine(lang, translated) ||
-            `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-          );
-        } catch (err) {
-          console.error(`translate ${lang} error =`, {
-            message: err?.message,
-            status: err?.status,
-            code: err?.code,
-            name: err?.name,
-          });
-          if (err?.stack) console.error(err.stack);
-          return `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`;
-        }
+        const translated = await translateToTargetSafe(text, lang);
+        if (!translated) return null;
+        return safeTranslatedLine(lang, translated);
       })
     );
 
@@ -2804,14 +2970,6 @@ async function handleEvent(event) {
   } catch (err) {
     console.error("handleEvent error =", err);
     if (err?.stack) console.error(err.stack);
-
-    if (event?.replyToken) {
-      try {
-        await replyText(event.replyToken, "系統處理失敗，請稍後再試。");
-      } catch (replyErr) {
-        console.error("reply fallback error =", replyErr);
-      }
-    }
   } finally {
     logTiming(
       "handleEvent",
