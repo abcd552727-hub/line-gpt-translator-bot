@@ -23,7 +23,8 @@ const {
   LINE_CHANNEL_ACCESS_TOKEN,
   LINE_CHANNEL_SECRET,
   OPENAI_API_KEY,
-  OPENAI_MODEL = "gpt-5.4-mini",
+  // ✅ 修正：使用正確的模型名稱，預設改為 gpt-4.1-mini
+  OPENAI_MODEL = "gpt-4.1-mini",
   DATABASE_URL,
   PORT = 3000,
 } = process.env;
