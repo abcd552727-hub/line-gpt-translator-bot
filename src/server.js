@@ -95,7 +95,7 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "ไม่นะครับ": "不是喔",
   "ไม่ใช่ค่ะ": "不是喔",
   "ไม่ใช่คะ": "不是喔",
-  "不ใช่ครับ": "不是喔",
+  "ไม่ใช่ครับ": "不是喔",
   "ได้ค่ะ": "可以喔",
   "ได้คะ": "可以喔",
   "ได้ครับ": "可以喔",
@@ -112,7 +112,7 @@ const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
   "มาไหม": "要來嗎",
   "ไม่เป็นไร": "沒關係",
   "ไม่เป็นไรค่ะ": "沒關係",
-  "不เป็นไรครับ": "沒關係",
+ "ไม่เป็นไรครับ": "沒關係",
   "ยัง": "還沒",
   "ยังคะ": "還沒喔",
   "ยังค่ะ": "還沒喔",
@@ -742,6 +742,7 @@ async function askModelTranslate({
     sourceHint,
     specialHint,
   });
+
   logTiming(
     "translation_cache_read",
     cacheReadStart,
@@ -763,28 +764,43 @@ async function askModelTranslate({
     temperature: 0.2,
     input: prompt,
   });
+
   logTiming(
     "openai_responses_create",
     openaiStart,
     `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
   );
 
-  const output = cleanupTranslation(response.output_text || "");
+  const output = extractOpenAIText(response);
 
-  if (output) {
-    const cacheSaveStart = Date.now();
-    void saveTranslationCache({
-      text,
-      translatedText: output,
+  if (!output) {
+    console.error("askModelTranslate empty output", {
       targetLang,
       sourceHint,
       specialHint,
-    }).catch((err) => {
-      console.error("saveTranslationCache error =", err);
-      if (err?.stack) console.error(err.stack);
+      model: OPENAI_MODEL,
+      response,
     });
-    logTiming("translation_cache_save_async", cacheSaveStart, `target=${targetLang}`);
+    throw new Error(`Empty translation output for ${targetLang}`);
   }
+
+  const cacheSaveStart = Date.now();
+  void saveTranslationCache({
+    text,
+    translatedText: output,
+    targetLang,
+    sourceHint,
+    specialHint,
+  }).catch((err) => {
+    console.error("saveTranslationCache error =", err);
+    if (err?.stack) console.error(err.stack);
+  });
+
+  logTiming(
+    "translation_cache_save_async",
+    cacheSaveStart,
+    `target=${targetLang}`
+  );
 
   return output;
 }
@@ -896,7 +912,29 @@ function safeJsonParse(text = "") {
 
   return null;
 }
+function extractOpenAIText(response) {
+  const direct = cleanupTranslation(response?.output_text || "");
+  if (direct) return direct;
 
+  const chunks = [];
+
+  try {
+    for (const item of response?.output || []) {
+      for (const content of item?.content || []) {
+        if (content?.type === "output_text" && typeof content.text === "string") {
+          chunks.push(content.text);
+        } else if (typeof content?.text === "string") {
+          chunks.push(content.text);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("extractOpenAIText error =", err);
+    if (err?.stack) console.error(err.stack);
+  }
+
+  return cleanupTranslation(chunks.join("\n").trim());
+}
 function buildLangOutputRule(lang) {
   const targetName = getLangPureName(lang);
 
@@ -1285,72 +1323,27 @@ async function translateToTargets(text, targetLangs) {
   const normalizedTargets = normalizeLangList(targetLangs || []);
   if (!normalizedTargets.length) return {};
 
-  const metaByLang = {};
-  let mergedHint = "";
-  let sourceLang = detectSourceLangSimple(text);
-
-  for (const lang of normalizedTargets) {
-    const meta = collectLangSpecialHint(text, lang);
-    metaByLang[lang] = meta;
-    sourceLang = meta.sourceLang || sourceLang;
-    if (meta.specialHint) mergedHint += ` [${lang}] ${meta.specialHint}`;
-  }
-
-  let outputs = await askModelTranslateMulti({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint: sourceLang,
-    specialHint: mergedHint.trim(),
+  const results = {};
+  const tasks = normalizedTargets.map(async (lang) => {
+    try {
+      const translated = await translateToTarget(text, lang);
+      return [lang, cleanupTranslation(translated || "")];
+    } catch (err) {
+      console.error(`translateToTarget failed: ${lang}`, err);
+      if (err?.stack) console.error(err.stack);
+      return [lang, ""];
+    }
   });
 
-  const retryTargets = [];
+  const settled = await Promise.all(tasks);
 
-  for (const lang of normalizedTargets) {
-    let value = cleanupTranslation(outputs?.[lang] || "");
-    const fixedTerms = getMatchedFixedTerms(text);
-    const allowWholeOriginalText = fixedTerms.some(
-      (item) => item.target === item.src && isSameText(text, item.src)
-    );
-
-    if (lang === "zh-TW" || lang === "zh-CN") {
-      value = cleanupResidualThaiInChinese(value, fixedTerms);
-    }
-
-    const sameAsInput =
-      !allowWholeOriginalText &&
-      sourceLang !== lang &&
-      isSameText(value, text);
-
-    const wrongScript = hasWrongScriptForTarget(value, lang, fixedTerms);
-    const empty = !value;
-
-    outputs[lang] = value;
-
-    if (empty || sameAsInput || wrongScript) {
-      retryTargets.push(lang);
-    }
+  for (const [lang, translated] of settled) {
+    results[lang] = translated;
   }
 
-  if (retryTargets.length) {
-    const retryMap = await Promise.all(
-      retryTargets.map(async (lang) => {
-        try {
-          const translated = await translateToTarget(text, lang);
-          return [lang, translated];
-        } catch (err) {
-          console.error(`fallback translate ${lang} error:`, err);
-          return [lang, outputs[lang] || ""];
-        }
-      })
-    );
-
-    for (const [lang, translated] of retryMap) {
-      outputs[lang] = cleanupTranslation(translated || "");
-    }
-  }
-
-  return outputs;
+  return results;
 }
+
 
 function parsePostbackData(data) {
   const params = new URLSearchParams(data);
@@ -3074,22 +3067,24 @@ async function handleTextMessage(event) {
       return;
     }
 
-    let translatedMap = {};
+ let translatedMap = {};
 
-    try {
-      translatedMap = await translateToTargets(text, langsToTranslate);
-    } catch (err) {
-      console.error("translateToTargets group error:", err);
-      translatedMap = {};
-    }
+try {
+  translatedMap = await translateToTargets(text, targetLangs);
+} catch (err) {
+  console.error("translateToTargets private error:", err);
+  if (err?.stack) console.error(err.stack);
+  await replyText(
+    event.replyToken,
+    `翻譯系統錯誤（private）：${err?.message || "unknown error"}`
+  );
+  return;
+}
 
-    const results = langsToTranslate.map((lang) => {
-      const translated = translatedMap?.[lang] || "";
-      return (
-        safeTranslatedLine(lang, translated) ||
-        `【${LANG_LABELS[lang] || lang}】\n翻譯失敗`
-      );
-    });
+   const results = langsToTranslate.map((lang) => {
+  const translated = translatedMap?.[lang] || "";
+  return safeTranslatedLine(lang, translated);
+});
 
     const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
