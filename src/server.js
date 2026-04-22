@@ -23,7 +23,7 @@ const {
   LINE_CHANNEL_ACCESS_TOKEN,
   LINE_CHANNEL_SECRET,
   OPENAI_API_KEY,
-  OPENAI_MODEL = "GPT-5.4 mini",
+  OPENAI_MODEL = "gpt-5_4-mini",
   DATABASE_URL,
   PORT = 3000,
 } = process.env;
