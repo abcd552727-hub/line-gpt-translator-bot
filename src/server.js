@@ -38,6 +38,9 @@ const OPENAI_MAX_RETRIES = Math.max(
   Number(process.env.OPENAI_MAX_RETRIES || 1)
 );
 
+const OPENAI_REASONING_EFFORT =
+  process.env.OPENAI_REASONING_EFFORT || "none";
+
 const WEBHOOK_EVENT_CONCURRENCY = Math.max(
   1,
   Number(process.env.WEBHOOK_EVENT_CONCURRENCY || 3)
@@ -57,7 +60,10 @@ if (!OPENAI_API_KEY) missingVars.push("OPENAI_API_KEY");
 if (!DATABASE_URL) missingVars.push("DATABASE_URL");
 
 if (missingVars.length > 0) {
-  console.error("Missing required environment variables:", missingVars.join(", "));
+  console.error(
+    "Missing required environment variables:",
+    missingVars.join(", ")
+  );
   process.exit(1);
 }
 
@@ -65,11 +71,11 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v7";
+const CACHE_VERSION = "v8";
 
 const FIXED_TERM_MAP = {
-  "เหิงซุน": "เหิงซุน",
-  "เฮงชุน": "恆春",
+  เหิงซุน: "เหิงซุน",
+  เฮงชุน: "恆春",
 };
 
 const CONTEXT_TYPO_MAP = [
@@ -77,50 +83,52 @@ const CONTEXT_TYPO_MAP = [
     wrong: "บอท",
     intended: "บอส",
     zh: "老闆",
-    hint: "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。",
+    hint:
+      "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。",
   },
   {
     wrong: "บอก",
     intended: "บอส",
     zh: "老闆",
-    hint: "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
+    hint:
+      "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
   },
 ];
 
 const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
-  "ไม่ค่ะ": "不是喔",
-  "ไม่คะ": "不是喔",
-  "ไม่ครับ": "不是喔",
-  "ไม่นะคะ": "不是喔",
-  "ไม่นะครับ": "不是喔",
-  "ไม่ใช่ค่ะ": "不是喔",
-  "ไม่ใช่คะ": "不是喔",
-  "ไม่ใช่ครับ": "不是喔",
-  "ได้ค่ะ": "可以喔",
-  "ได้คะ": "可以喔",
-  "ได้ครับ": "可以喔",
-  "โอเคค่ะ": "好喔",
-  "โอเคคะ": "好喔",
-  "โอเคครับ": "好喔",
-  "โอเค": "好喔",
-  "ใช่ค่ะ": "是喔",
-  "ใช่คะ": "是喔",
-  "ใช่ครับ": "是喔",
-  "อยู่ไหม": "在嗎",
-  "อยู่มั้ย": "在嗎",
-  "ได้ไหม": "可以嗎",
-  "มาไหม": "要來嗎",
-  "ไม่เป็นไร": "沒關係",
-  "ไม่เป็นไรค่ะ": "沒關係",
- "ไม่เป็นไรครับ": "沒關係",
-  "ยัง": "還沒",
-  "ยังคะ": "還沒喔",
-  "ยังค่ะ": "還沒喔",
-  "ยังครับ": "還沒喔",
-  "ยังไหม": "還沒嗎",
-  "ยังมั้ย": "還沒嗎",
-  "ยังหรอ": "還沒嗎",
-  "ยังเหรอ": "還沒嗎",
+  ไม่ค่ะ: "不是喔",
+  ไม่คะ: "不是喔",
+  ไม่ครับ: "不是喔",
+  ไม่นะคะ: "不是喔",
+  ไม่นะครับ: "不是喔",
+  ไม่ใช่ค่ะ: "不是喔",
+  ไม่ใช่คะ: "不是喔",
+  ไม่ใช่ครับ: "不是喔",
+  ได้ค่ะ: "可以喔",
+  ได้คะ: "可以喔",
+  ได้ครับ: "可以喔",
+  โอเคค่ะ: "好喔",
+  โอเคคะ: "好喔",
+  โอเคครับ: "好喔",
+  โอเค: "好喔",
+  ใช่ค่ะ: "是喔",
+  ใช่คะ: "是喔",
+  ใช่ครับ: "是喔",
+  อยู่ไหม: "在嗎",
+  อยู่มั้ย: "在嗎",
+  ได้ไหม: "可以嗎",
+  มาไหม: "要來嗎",
+  ไม่เป็นไร: "沒關係",
+  ไม่เป็นไรค่ะ: "沒關係",
+  ไม่เป็นไรครับ: "沒關係",
+  ยัง: "還沒",
+  ยังคะ: "還沒喔",
+  ยังค่ะ: "還沒喔",
+  ยังครับ: "還沒喔",
+  ยังไหม: "還沒嗎",
+  ยังมั้ย: "還沒嗎",
+  ยังหรอ: "還沒嗎",
+  ยังเหรอ: "還沒嗎",
 };
 
 const SUPER_ADMINS = [
@@ -458,7 +466,10 @@ function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
 }
 
 function normalizeThaiShortKey(text = "") {
-  return String(text || "").trim().toLowerCase().replace(/\s+/g, "");
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
 }
 
 function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
@@ -468,10 +479,7 @@ function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
   if (!translated) return null;
 
   if (targetLang === "zh-CN") {
-    return translated
-      .replace(/還/g, "还")
-      .replace(/沒/g, "没")
-      .replace(/嗎/g, "吗");
+    return translated.replace(/還/g, "还").replace(/沒/g, "没").replace(/嗎/g, "吗");
   }
 
   return translated;
@@ -501,9 +509,7 @@ function looksLikeThaiDialectText(text = "") {
 
   if (isVeryShortText(t)) return true;
 
-  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(
-    t
-  );
+  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
 }
 
 function looksLikeNamedEntityShortText(text = "") {
@@ -603,8 +609,9 @@ function getGroupLimitText(plan) {
   if (
     plan.plan_type === "unlimited_groups" ||
     plan.plan_type === "trial_7days"
-  )
+  ) {
     return "不限";
+  }
   return String(plan.group_limit ?? "1");
 }
 
@@ -614,44 +621,63 @@ function parsePositiveInt(value, defaultValue = 1) {
   return num;
 }
 
-function buildStablePrompt({
-  text,
-  targetLang,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
+function buildStableInstructions({ targetLang, specialHint = "" }) {
   const targetName = getLangPureName(targetLang);
-  const fixedTermsHint = buildFixedTermsHint(text);
-  const contextTypoHint = buildContextTypoHint(text);
 
   return `
 你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
 
-請把下面內容翻成「${targetName}」。
-只輸出最終翻譯結果。
-不可加前綴，不可加「翻譯：」，不可加引號，不可加括號註解。
+你的唯一任務：
+把使用者內容翻成「${targetName}」。
 
-翻譯規則：
-1. 忠實保留原意，不增加、不刪減
-2. 用自然口語表達，不要生硬直譯
-3. 短句、聊天句、口語、省略句，要依對話情境自然翻譯
-4. 若來源語言與目標語言不同，不可原樣照抄原文
-5. 若目標語言是中文，輸出必須是純中文，不可殘留泰文語氣詞，例如「คะ / ค่ะ / ครับ」
-6. 若目標語言是泰文，輸出必須是純泰文，不可混入中文
-7. 若原文有誤拼、口語、方言，只能做合理語意修正，不可自行編造內容
-8. 若有固定術語，必須完全遵守，不可自行改寫
-9. 不可重複原文，不可把原文和翻譯一起輸出
-10. 若原文是極短泰文如「ยัง / ยังค่ะ / ยังครับ」，必須依上下文自然翻譯成中文，例如「還沒 / 還沒喔 / 還沒嗎 / 還在嗎 / 還有嗎」，不可直譯成不自然的「還嗎」
+硬性規則：
+1. 只輸出最終翻譯結果
+2. 不可加前綴，不可加「翻譯：」
+3. 不可加引號、括號、註解、說明
+4. 不可補內容，不可刪內容
+5. 不可把原文和翻譯一起輸出
+6. 要保留原句強度、語氣、簡短程度
+7. 聊天句要自然，但不可擴寫
+8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ
+9. 若目標語言是泰文，不可混入中文
+10. 若原文有口語、誤拼、方言，只能做合理語意修正，不可自行編故事
 
-來源語言提示：${sourceHint}
-目標語言：${targetName}
-補充提示：${specialHint || "無"}
+補充提示：
+${specialHint || "無"}
+  `.trim();
+}
 
-${fixedTermsHint || ""}
-${contextTypoHint || ""}
+function buildMultiStableInstructions({ targetLangs, specialHint = "" }) {
+  return `
+你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
 
-內容：
-${text}
+請把同一段內容一次翻成多個語言。
+你只能輸出 JSON。
+不可輸出 markdown，不可輸出說明，不可輸出前後文。
+
+輸出格式範例：
+{
+  "zh-TW": "...",
+  "th": "...",
+  "en": "..."
+}
+
+硬性規則：
+1. 每個 key 的 value 只能是該語言的最終翻譯
+2. 不可把原文和翻譯一起輸出
+3. 不可加前綴、引號外說明、註解
+4. 忠實保留原意，不增加、不刪減
+5. 聊天句自然，但不可擴寫
+6. 翻成中文時，不可殘留泰文語氣詞
+7. 翻成泰文時，不可混入中文
+8. 若有固定術語，必須遵守
+9. 若有口語、短句、誤拼，依聊天語境自然翻譯
+
+補充提示：
+${specialHint || "無"}
+
+目標語言：
+${targetLangs.map((lang) => `${lang} = ${getLangPureName(lang)}`).join("\n")}
   `.trim();
 }
 
@@ -727,82 +753,6 @@ async function saveTranslationCache({
       translatedText,
     ]
   );
-}
-
-async function askModelTranslate({
-  text,
-  targetLang,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const cacheReadStart = Date.now();
-  const cached = await getTranslationCache({
-    text,
-    targetLang,
-    sourceHint,
-    specialHint,
-  });
-
-  logTiming(
-    "translation_cache_read",
-    cacheReadStart,
-    `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
-  );
-
-  if (cached) return cleanupTranslation(cached);
-
-  const prompt = buildStablePrompt({
-    text,
-    targetLang,
-    sourceHint,
-    specialHint,
-  });
-
-  const openaiStart = Date.now();
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    input: prompt,
-  });
-
-  logTiming(
-    "openai_responses_create",
-    openaiStart,
-    `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
-  );
-
-  const output = extractOpenAIText(response);
-
-  if (!output) {
-    console.error("askModelTranslate empty output", {
-      targetLang,
-      sourceHint,
-      specialHint,
-      model: OPENAI_MODEL,
-      response,
-    });
-    throw new Error(`Empty translation output for ${targetLang}`);
-  }
-
-  const cacheSaveStart = Date.now();
-  void saveTranslationCache({
-    text,
-    translatedText: output,
-    targetLang,
-    sourceHint,
-    specialHint,
-  }).catch((err) => {
-    console.error("saveTranslationCache error =", err);
-    if (err?.stack) console.error(err.stack);
-  });
-
-  logTiming(
-    "translation_cache_save_async",
-    cacheSaveStart,
-    `target=${targetLang}`
-  );
-
-  return output;
 }
 
 function buildMultiTargetCacheKey({
@@ -912,6 +862,7 @@ function safeJsonParse(text = "") {
 
   return null;
 }
+
 function extractOpenAIText(response) {
   const direct = cleanupTranslation(response?.output_text || "");
   if (direct) return direct;
@@ -934,149 +885,6 @@ function extractOpenAIText(response) {
   }
 
   return cleanupTranslation(chunks.join("\n").trim());
-}
-function buildLangOutputRule(lang) {
-  const targetName = getLangPureName(lang);
-
-  if (lang === "zh-TW") {
-    return `「${lang}」：輸出自然繁體中文。不可殘留泰文語氣詞（如 คะ / ค่ะ / ครับ）。不可中國式生硬書面句。`;
-  }
-
-  if (lang === "zh-CN") {
-    return `「${lang}」：輸出自然简体中文。不可殘留泰文語氣詞（如 คะ / ค่ะ / ครับ）。`;
-  }
-
-  if (lang === "th") {
-    return `「${lang}」：輸出自然泰文。不可混入中文。不可自行加長句子或額外客氣話。`;
-  }
-
-  if (lang === "en") {
-    return `「${lang}」：輸出自然英文。不可混入中文或泰文。不可自行補成更完整、更客氣的句子。`;
-  }
-
-  return `「${lang}」：請翻成自然${targetName}，只輸出該語言內容。`;
-}
-
-function buildMultiStablePrompt({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const fixedTermsHint = buildFixedTermsHint(text);
-  const contextTypoHint = buildContextTypoHint(text);
-
-  return `
-你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
-
-請把同一段內容一次翻成多個目標語言，並且只輸出 JSON。
-不可輸出 markdown，不可加說明，不可加前綴，不可加註解。
-
-輸出格式必須是：
-{
-  "zh-TW": "...",
-  "th": "...",
-  "en": "..."
-}
-
-規則：
-1. 忠實保留原意，不增加、不刪減
-2. 聊天句要自然，不要生硬直譯
-3. 不可把原文和翻譯一起輸出
-4. 每個 key 的 value 只能是該語言的最終翻譯文字
-5. 若某語言不需要翻譯也不可留空，仍要輸出自然翻譯
-6. 固定術語表必須優先遵守，不可改寫
-7. 若原文是泰文短句、口語、省略句，要依聊天語境自然翻譯
-8. 若翻成中文，不可殘留泰文語氣詞
-9. 若翻成泰文，不可混入中文
-
-來源語言提示：${sourceHint}
-補充提示：${specialHint || "無"}
-
-各語言要求：
-${targetLangs.map(buildLangOutputRule).join("\n")}
-
-${fixedTermsHint || ""}
-${contextTypoHint || ""}
-
-內容：
-${text}
-  `.trim();
-}
-
-async function askModelTranslateMulti({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  const normalizedTargets = normalizeLangList(targetLangs || []);
-  if (!normalizedTargets.length) return {};
-
-  const cacheReadStart = Date.now();
-  const cached = await getMultiTranslationCache({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  });
-  logTiming(
-    "multi_translation_cache_read",
-    cacheReadStart,
-    `targets=${normalizedTargets.join(",")} hit=${!!cached} chars=${String(text || "").length}`
-  );
-
-  if (cached && typeof cached === "object") {
-    return cached;
-  }
-
-  const prompt = buildMultiStablePrompt({
-    text,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  });
-
-  const openaiStart = Date.now();
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    input: prompt,
-  });
-  logTiming(
-    "openai_multi_responses_create",
-    openaiStart,
-    `targets=${normalizedTargets.join(",")} model=${OPENAI_MODEL} chars=${String(text || "").length}`
-  );
-
-  const parsed = safeJsonParse(response.output_text || "");
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Multi-translation JSON parse failed");
-  }
-
-  const cleaned = {};
-  for (const lang of normalizedTargets) {
-    cleaned[lang] = cleanupTranslation(parsed[lang] || "");
-  }
-
-  const cacheSaveStart = Date.now();
-  void saveMultiTranslationCache({
-    text,
-    translatedMap: cleaned,
-    targetLangs: normalizedTargets,
-    sourceHint,
-    specialHint,
-  }).catch((err) => {
-    console.error("saveMultiTranslationCache error =", err);
-    if (err?.stack) console.error(err.stack);
-  });
-  logTiming(
-    "multi_translation_cache_save_async",
-    cacheSaveStart,
-    `targets=${normalizedTargets.join(",")}`
-  );
-
-  return cleaned;
 }
 
 function collectLangSpecialHint(text, targetLang) {
@@ -1134,6 +942,216 @@ function collectLangSpecialHint(text, targetLang) {
   };
 }
 
+function collectMultiSpecialHint(text) {
+  const sourceLang = detectSourceLangSimple(text);
+  const thaiShortChat = looksLikeThaiShortChat(text);
+  const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  let specialHint = "";
+
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (thaiDialect) {
+    specialHint += " 這段可能是泰文口語或方言，請依對話情境翻譯成自然用語。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但上下文更像在稱呼真人，請優先依情境修正。";
+  }
+
+  return {
+    sourceLang,
+    specialHint: specialHint.trim(),
+  };
+}
+
+async function askModelTranslate({
+  text,
+  targetLang,
+  sourceHint = "auto",
+  specialHint = "",
+}) {
+  const cacheReadStart = Date.now();
+  const cached = await getTranslationCache({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
+
+  logTiming(
+    "translation_cache_read",
+    cacheReadStart,
+    `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
+  );
+
+  if (cached) return cleanupTranslation(cached);
+
+  const fixedTermsHint = buildFixedTermsHint(text);
+  const contextTypoHint = buildContextTypoHint(text);
+
+  const instructions = buildStableInstructions({
+    targetLang,
+    specialHint: `
+來源語言提示：${sourceHint}
+${specialHint || ""}
+${fixedTermsHint || ""}
+${contextTypoHint || ""}
+    `.trim(),
+  });
+
+  const openaiStart = Date.now();
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    temperature: 0,
+    reasoning: { effort: OPENAI_REASONING_EFFORT },
+    input: [
+      {
+        role: "developer",
+        content: instructions,
+      },
+      {
+        role: "user",
+        content: String(text || ""),
+      },
+    ],
+  });
+
+  logTiming(
+    "openai_responses_create",
+    openaiStart,
+    `target=${targetLang} model=${OPENAI_MODEL} chars=${String(text || "").length}`
+  );
+
+  const output = extractOpenAIText(response);
+
+  if (!output) {
+    console.error("askModelTranslate empty output", {
+      targetLang,
+      sourceHint,
+      specialHint,
+      model: OPENAI_MODEL,
+    });
+    throw new Error(`Empty translation output for ${targetLang}`);
+  }
+
+  void saveTranslationCache({
+    text,
+    translatedText: output,
+    targetLang,
+    sourceHint,
+    specialHint,
+  }).catch((err) => {
+    console.error("saveTranslationCache error =", err);
+    if (err?.stack) console.error(err.stack);
+  });
+
+  return cleanupTranslation(output);
+}
+
+async function askModelTranslateMulti({
+  text,
+  targetLangs,
+  sourceHint = "auto",
+  specialHint = "",
+}) {
+  const normalizedTargets = normalizeLangList(targetLangs || []);
+  if (!normalizedTargets.length) return {};
+
+  const cacheReadStart = Date.now();
+  const cached = await getMultiTranslationCache({
+    text,
+    targetLangs: normalizedTargets,
+    sourceHint,
+    specialHint,
+  });
+
+  logTiming(
+    "multi_translation_cache_read",
+    cacheReadStart,
+    `targets=${normalizedTargets.join(",")} hit=${!!cached} chars=${String(text || "").length}`
+  );
+
+  if (cached && typeof cached === "object") {
+    return cached;
+  }
+
+  const fixedTermsHint = buildFixedTermsHint(text);
+  const contextTypoHint = buildContextTypoHint(text);
+
+  const instructions = buildMultiStableInstructions({
+    targetLangs: normalizedTargets,
+    specialHint: `
+來源語言提示：${sourceHint}
+${specialHint || ""}
+${fixedTermsHint || ""}
+${contextTypoHint || ""}
+    `.trim(),
+  });
+
+  const openaiStart = Date.now();
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    temperature: 0,
+    reasoning: { effort: OPENAI_REASONING_EFFORT },
+    input: [
+      {
+        role: "developer",
+        content: instructions,
+      },
+      {
+        role: "user",
+        content: String(text || ""),
+      },
+    ],
+  });
+
+  logTiming(
+    "openai_multi_responses_create",
+    openaiStart,
+    `targets=${normalizedTargets.join(",")} model=${OPENAI_MODEL} chars=${String(text || "").length}`
+  );
+
+  const raw = extractOpenAIText(response);
+  const parsed = safeJsonParse(raw);
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Multi-translation JSON parse failed");
+  }
+
+  const cleaned = {};
+  for (const lang of normalizedTargets) {
+    cleaned[lang] = cleanupTranslation(parsed[lang] || "");
+  }
+
+  void saveMultiTranslationCache({
+    text,
+    translatedMap: cleaned,
+    targetLangs: normalizedTargets,
+    sourceHint,
+    specialHint,
+  }).catch((err) => {
+    console.error("saveMultiTranslationCache error =", err);
+    if (err?.stack) console.error(err.stack);
+  });
+
+  return cleaned;
+}
+
 async function verifyPlaceNameOnline(text) {
   return {
     found: false,
@@ -1186,16 +1204,12 @@ async function translateToTarget(text, targetLang) {
   const namedEntityShort = looksLikeNamedEntityShortText(text);
   const possiblePlaceName = looksLikePossiblePlaceName(text);
   const fixedTerms = getMatchedFixedTerms(text);
-  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
   const allowWholeOriginalText = fixedTerms.some(
     (item) => item.target === item.src && isSameText(text, item.src)
   );
   const targetName = getLangPureName(targetLang);
 
-  if (
-    (targetLang === "zh-TW" || targetLang === "zh-CN") &&
-    possiblePlaceName
-  ) {
+  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && possiblePlaceName) {
     const verified = await verifyPlaceNameOnline(text);
     if (verified?.found && verified?.zhName && verified.confidence >= 0.85) {
       return verified.zhName;
@@ -1323,27 +1337,48 @@ async function translateToTargets(text, targetLangs) {
   const normalizedTargets = normalizeLangList(targetLangs || []);
   if (!normalizedTargets.length) return {};
 
+  const { sourceLang, specialHint } = collectMultiSpecialHint(text);
+
+  try {
+    const multiResult = await askModelTranslateMulti({
+      text,
+      targetLangs: normalizedTargets,
+      sourceHint: sourceLang,
+      specialHint,
+    });
+
+    const cleaned = {};
+    const fixedTerms = getMatchedFixedTerms(text);
+
+    for (const lang of normalizedTargets) {
+      let out = cleanupTranslation(multiResult?.[lang] || "");
+
+      if (lang === "zh-TW" || lang === "zh-CN") {
+        out = cleanupResidualThaiInChinese(out, fixedTerms);
+      }
+
+      cleaned[lang] = out;
+    }
+
+    return cleaned;
+  } catch (err) {
+    console.error("askModelTranslateMulti failed, fallback to single:", err);
+    if (err?.stack) console.error(err.stack);
+  }
+
   const results = {};
-  const tasks = normalizedTargets.map(async (lang) => {
+  for (const lang of normalizedTargets) {
     try {
-      const translated = await translateToTarget(text, lang);
-      return [lang, cleanupTranslation(translated || "")];
+      results[lang] = await translateToTarget(text, lang);
     } catch (err) {
       console.error(`translateToTarget failed: ${lang}`, err);
       if (err?.stack) console.error(err.stack);
-      return [lang, ""];
+      results[lang] = "";
     }
-  });
-
-  const settled = await Promise.all(tasks);
-
-  for (const [lang, translated] of settled) {
-    results[lang] = translated;
   }
 
   return results;
 }
-
 
 function parsePostbackData(data) {
   const params = new URLSearchParams(data);
@@ -1903,7 +1938,7 @@ async function fetchUserProfileFromApiByUserId(userId) {
       picture_url: p?.pictureUrl || "",
       status_message: p?.statusMessage || "",
     };
-  } catch (err) {
+  } catch {
     return null;
   }
 }
@@ -1940,7 +1975,7 @@ async function fetchUserProfileFromEvent(event) {
       picture_url: p?.pictureUrl || "",
       status_message: p?.statusMessage || "",
     };
-  } catch (err) {
+  } catch {
     const fallback = await fetchUserProfileFromApiByUserId(userId);
     return fallback;
   }
@@ -2940,7 +2975,6 @@ async function handleTextMessage(event) {
     }
 
     const chatType = getChatType(event);
-
     const group = await ensureGroupDb(chatId);
 
     let actingPlan = null;
@@ -3034,6 +3068,7 @@ async function handleTextMessage(event) {
         translatedMap = await translateToTargets(text, targetLangs);
       } catch (err) {
         console.error("translateToTargets private error:", err);
+        if (err?.stack) console.error(err.stack);
         translatedMap = {};
       }
 
@@ -3046,7 +3081,28 @@ async function handleTextMessage(event) {
       const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
       if (!outputs.length) {
-        await replyText(event.replyToken, "翻譯失敗，請稍後再試。");
+        try {
+          const fallbackLang =
+            sourceLang === "th"
+              ? "zh-TW"
+              : sourceLang === "zh-TW" || sourceLang === "zh-CN"
+              ? "th"
+              : "zh-TW";
+
+          const fallbackText = await translateToTarget(text, fallbackLang);
+          if (fallbackText) {
+            await replyText(
+              event.replyToken,
+              safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯"
+            );
+            return;
+          }
+        } catch (err) {
+          console.error("private fallback translate error =", err);
+          if (err?.stack) console.error(err.stack);
+        }
+
+        await replyText(event.replyToken, "目前翻譯暫時不穩，請重送一次。");
         return;
       }
 
@@ -3067,24 +3123,39 @@ async function handleTextMessage(event) {
       return;
     }
 
- let translatedMap = {};
+    let translatedMap = {};
 
-try {
-  translatedMap = await translateToTargets(text, targetLangs);
-} catch (err) {
-  console.error("translateToTargets private error:", err);
-  if (err?.stack) console.error(err.stack);
-  await replyText(
-    event.replyToken,
-    `翻譯系統錯誤（private）：${err?.message || "unknown error"}`
-  );
-  return;
-}
+    try {
+      translatedMap = await translateToTargets(text, langsToTranslate);
+    } catch (err) {
+      console.error("translateToTargets group error:", err);
+      if (err?.stack) console.error(err.stack);
 
-   const results = langsToTranslate.map((lang) => {
-  const translated = translatedMap?.[lang] || "";
-  return safeTranslatedLine(lang, translated);
-});
+      try {
+        const fallbackLang = langsToTranslate[0];
+        if (fallbackLang) {
+          const fallbackText = await translateToTarget(text, fallbackLang);
+          if (fallbackText) {
+            await replyText(
+              event.replyToken,
+              safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯"
+            );
+            return;
+          }
+        }
+      } catch (fallbackErr) {
+        console.error("group fallback translate error:", fallbackErr);
+        if (fallbackErr?.stack) console.error(fallbackErr.stack);
+      }
+
+      await replyText(event.replyToken, "目前翻譯暫時不穩，請重送一次。");
+      return;
+    }
+
+    const results = langsToTranslate.map((lang) => {
+      const translated = translatedMap?.[lang] || "";
+      return safeTranslatedLine(lang, translated);
+    });
 
     const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
@@ -3223,7 +3294,7 @@ initDb()
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(
-        `OpenAI model=${OPENAI_MODEL}, timeout=${OPENAI_TIMEOUT_MS}ms, retries=${OPENAI_MAX_RETRIES}`
+        `OpenAI model=${OPENAI_MODEL}, timeout=${OPENAI_TIMEOUT_MS}ms, retries=${OPENAI_MAX_RETRIES}, reasoning=${OPENAI_REASONING_EFFORT}`
       );
       console.log(
         `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
