@@ -71,7 +71,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
 
 const FIXED_TERM_MAP = {
   เหิงซุน: "เหิงซุน",
@@ -442,6 +442,7 @@ function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
   let out = cleanupTranslation(text);
   const placeholders = [];
 
+  // 保護「固定術語表」裡故意要保留原文的詞
   for (const item of fixedTerms) {
     if (item?.src && item.target === item.src) {
       const token = `__FIXED_TERM_${placeholders.length}__`;
@@ -451,13 +452,21 @@ function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
   }
 
   out = out
-    .replace(/นะคะ/g, "喔")
-    .replace(/นะครับ/g, "喔")
-    .replace(/ค่ะ/g, "喔")
-    .replace(/ครับ/g, "喔")
-    .replace(/คะ/g, "嗎")
+    // 泰文常見語氣詞：有些轉中文語氣
+    .replace(/\s*(นะคะ|นะค่ะ|นะครับ|นะคับ|นะ|น้า)\s*/g, "喔")
+
+    // 泰文禮貌詞：通常直接刪掉，避免變成「嗎嗎」「喔喔」
+    .replace(/\s*(ค่ะ|คะ|ครับ|คับ|จ้า|จ๊ะ|จ้ะ|อ่ะ|อะ|เด้อ|เนอะ|ฮะ)\s*/g, "")
+
+    // 最後保險：中文結果裡只要還有泰文字母，全部移除
+    .replace(/[\u0E00-\u0E7F]+/g, "")
+
+    // 清理多餘空白
+    .replace(/\s+/g, " ")
+    .replace(/\s+([，。！？、,.!?])/g, "$1")
     .trim();
 
+  // 還原被保護的固定詞
   for (const { token, value } of placeholders) {
     out = out.split(token).join(value);
   }
