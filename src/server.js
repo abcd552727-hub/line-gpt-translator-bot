@@ -29,8 +29,8 @@ const {
 } = process.env;
 
 const OPENAI_TIMEOUT_MS = Math.max(
-  8000,
-  Number(process.env.OPENAI_TIMEOUT_MS || 20000)
+  5000,
+  Number(process.env.OPENAI_TIMEOUT_MS || 15000)
 );
 
 const OPENAI_MAX_RETRIES = Math.max(
@@ -43,12 +43,12 @@ const OPENAI_REASONING_EFFORT =
 
 const WEBHOOK_EVENT_CONCURRENCY = Math.max(
   1,
-  Number(process.env.WEBHOOK_EVENT_CONCURRENCY || 2)
+  Number(process.env.WEBHOOK_EVENT_CONCURRENCY || 3)
 );
 
 const MAX_TRANSLATION_RETRIES = Math.max(
-  1,
-  Number(process.env.MAX_TRANSLATION_RETRIES || 2)
+  0,
+  Number(process.env.MAX_TRANSLATION_RETRIES || 1)
 );
 
 const LOG_TIMING = process.env.LOG_TIMING !== "0";
@@ -60,102 +60,81 @@ if (!OPENAI_API_KEY) missingVars.push("OPENAI_API_KEY");
 if (!DATABASE_URL) missingVars.push("DATABASE_URL");
 
 if (missingVars.length > 0) {
-  console.error("Missing required environment variables:", missingVars.join(", "));
+  console.error(
+    "Missing required environment variables:",
+    missingVars.join(", ")
+  );
   process.exit(1);
 }
 
-const CONTACT_LINE_ID = process.env.CONTACT_LINE_ID || "aszx88188";
+const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
-  process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
-
 const MEMBER_LIST_PAGE_SIZE = 10;
-
-// 有改翻譯規則就改版本，避免舊快取把錯誤翻譯拿出來
-const CACHE_VERSION = "v11-strict-stable-translate-rules";
+const CACHE_VERSION = "v8";
 
 const FIXED_TERM_MAP = {
-  \u0E40\u0E2B\u0E34\u0E07\u0E0B\u0E38\u0E19: "恆春",
-  \u0E40\u0E2E\u0E07\u0E0A\u0E38\u0E19: "恆春",
+  เหิงซุน: "เหิงซุน",
+  เฮงชุน: "恆春",
 };
 
-// 只保留高信心糾錯。不要把所有「\u0E1A\u0E2D\u0E01」都當成老闆，因為 \u0E1A\u0E2D\u0E01 原意是「說 / 告訴」。
-const CONTEXT_TYPO_RULES = [
+const CONTEXT_TYPO_MAP = [
   {
-    name: "bot_to_boss",
-    test: (text) => /(^|\s)\u0E1A\u0E2D\u0E17(\u0E04\u0E30|\u0E04\u0E48\u0E30|\u0E04\u0E23\u0E31\u0E1A|\u0E04\u0E31\u0E1A)?(\s|$)/i.test(String(text || "")),
+    wrong: "บอท",
+    intended: "บอส",
+    zh: "老闆",
     hint:
-      "若「\u0E1A\u0E2D\u0E17/\u0E1A\u0E2D\u0E17\u0E04\u0E30/\u0E1A\u0E2D\u0E17\u0E04\u0E48\u0E30」出現在對真人說話、請求配合、工作服務聊天情境，通常是誤打「\u0E1A\u0E2D\u0E2A」，中文可翻「老闆」；若真的是機器人，才翻成機器人。",
+      "在真人聊天、服務、工作、陪聊、接客、請求對方配合的情境中，若出現「บอทคะ / บอทค่ะ / บอท」但上下文明顯是在稱呼真人，優先視為誤打的「บอส」，翻成「老闆」，不要翻成「機器人」。",
   },
   {
-    name: "bok_title_to_boss_only_at_beginning",
-    test: (text) =>
-      /^(\u0E1A\u0E2D\u0E01|\u0E1A\u0E2D\u0E01\u0E04\u0E30|\u0E1A\u0E2D\u0E01\u0E04\u0E48\u0E30|\u0E1A\u0E2D\u0E01\u0E04\u0E23\u0E31\u0E1A|\u0E1A\u0E2D\u0E01\u0E04\u0E31\u0E1A)(\s|$)/i.test(String(text || "").trim()) &&
-      String(text || "").trim().length <= 40,
+    wrong: "บอก",
+    intended: "บอส",
+    zh: "老闆",
     hint:
-      "只有句首短稱呼「\u0E1A\u0E2D\u0E01\u0E04\u0E30/\u0E1A\u0E2D\u0E01\u0E04\u0E48\u0E30/\u0E1A\u0E2D\u0E01\u0E04\u0E23\u0E31\u0E1A」且後面是請求或撒嬌語氣時，才可能是誤打「\u0E1A\u0E2D\u0E2A」，可依語境翻「老闆」。一般句子中的 \u0E1A\u0E2D\u0E01 必須照原意翻成「說/告訴」。"const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
-  \u0E44\u0E21\u0E48\u0E04\u0E48\u0E30: "不是",
-  \u0E44\u0E21\u0E48\u0E04\u0E30: "不是",
-  \u0E44\u0E21\u0E48\u0E04\u0E23\u0E31\u0E1A: "不是",
-  \u0E44\u0E21\u0E48\u0E19\u0E30\u0E04\u0E30: "不是",
-  \u0E44\u0E21\u0E48\u0E19\u0E30\u0E04\u0E23\u0E31\u0E1A: "不是",
-  \u0E44\u0E21\u0E48\u0E43\u0E0A\u0E48\u0E04\u0E48\u0E30: "不是",
-  \u0E44\u0E21\u0E48\u0E43\u0E0A\u0E48\u0E04\u0E30: "不是",
-  \u0E44\u0E21\u0E48\u0E43\u0E0A\u0E48\u0E04\u0E23\u0E31\u0E1A: "不是",
-  \u0E44\u0E14\u0E49\u0E04\u0E48\u0E30: "可以",
-  \u0E44\u0E14\u0E49\u0E04\u0E30: "可以",
-  \u0E44\u0E14\u0E49\u0E04\u0E23\u0E31\u0E1A: "可以",
-  \u0E42\u0E2D\u0E40\u0E04\u0E04\u0E48\u0E30: "好",
-  \u0E42\u0E2D\u0E40\u0E04\u0E04\u0E30: "好",
-  \u0E42\u0E2D\u0E40\u0E04\u0E04\u0E23\u0E31\u0E1A: "好",
-  \u0E42\u0E2D\u0E40\u0E04: "好",
-  \u0E43\u0E0A\u0E48\u0E04\u0E48\u0E30: "是",
-  \u0E43\u0E0A\u0E48\u0E04\u0E30: "是",
-  \u0E43\u0E0A\u0E48\u0E04\u0E23\u0E31\u0E1A: "是",
-  \u0E2D\u0E22\u0E39\u0E48\u0E44\u0E2B\u0E21: "在嗎",
-  \u0E2D\u0E22\u0E39\u0E48\u0E21\u0E31\u0E49\u0E22: "在嗎",
-  \u0E44\u0E14\u0E49\u0E44\u0E2B\u0E21: "可以嗎",
-  \u0E21\u0E32\u0E44\u0E2B\u0E21: "要來嗎",
-  \u0E44\u0E21\u0E48\u0E40\u0E1B\u0E47\u0E19\u0E44\u0E23: "沒關係",
-  \u0E44\u0E21\u0E48\u0E40\u0E1B\u0E47\u0E19\u0E44\u0E23\u0E04\u0E48\u0E30: "沒關係",
-  \u0E44\u0E21\u0E48\u0E40\u0E1B\u0E47\u0E19\u0E44\u0E23\u0E04\u0E23\u0E31\u0E1A: "沒關係",
-  \u0E22\u0E31\u0E07: "還沒",
-  \u0E22\u0E31\u0E07\u0E04\u0E30: "還沒",
-  \u0E22\u0E31\u0E07\u0E04\u0E48\u0E30: "還沒",
-  \u0E22\u0E31\u0E07\u0E04\u0E23\u0E31\u0E1A: "還沒",
-  \u0E22\u0E31\u0E07\u0E44\u0E2B\u0E21: "還沒嗎",
-  \u0E22\u0E31\u0E07\u0E21\u0E31\u0E49\u0E22: "還沒嗎",
-  \u0E22\u0E31\u0E07\u0E2B\u0E23\u0E2D: "還沒嗎",
-  \u0E22\u0E31\u0E07\u0E40\u0E2B\u0E23\u0E2D: "還沒嗎",
-};
+      "若句首出現「บอกคะ / บอกค่ะ」且後面接請求、稱呼、撒嬌、工作配合內容，優先視為誤打的「บอสคะ / บอสค่ะ」，翻成「老闆」。",
+  },
+];
 
-"還沒嗎",
+const THAI_SHORT_CHAT_DIRECT_ZH_MAP = {
+  ไม่ค่ะ: "不是喔",
+  ไม่คะ: "不是喔",
+  ไม่ครับ: "不是喔",
+  ไม่นะคะ: "不是喔",
+  ไม่นะครับ: "不是喔",
+  ไม่ใช่ค่ะ: "不是喔",
+  ไม่ใช่คะ: "不是喔",
+  ไม่ใช่ครับ: "不是喔",
+  ได้ค่ะ: "可以喔",
+  ได้คะ: "可以喔",
+  ได้ครับ: "可以喔",
+  โอเคค่ะ: "好喔",
+  โอเคคะ: "好喔",
+  โอเคครับ: "好喔",
+  โอเค: "好喔",
+  ใช่ค่ะ: "是喔",
+  ใช่คะ: "是喔",
+  ใช่ครับ: "是喔",
+  อยู่ไหม: "在嗎",
+  อยู่มั้ย: "在嗎",
+  ได้ไหม: "可以嗎",
+  มาไหม: "要來嗎",
+  ไม่เป็นไร: "沒關係",
+  ไม่เป็นไรค่ะ: "沒關係",
+  ไม่เป็นไรครับ: "沒關係",
+  ยัง: "還沒",
+  ยังคะ: "還沒喔",
+  ยังค่ะ: "還沒喔",
+  ยังครับ: "還沒喔",
+  ยังไหม: "還沒嗎",
+  ยังมั้ย: "還沒嗎",
+  ยังหรอ: "還沒嗎",
+  ยังเหรอ: "還沒嗎",
 };
 
 const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
   "Uceba5819446e95c6cb0f12f8e27157aa",
 ];
-
-const LANG_LABELS = {
-  "zh-TW": "繁體中文",
-  "zh-CN": "简体中文",
-  th: "\u0E44\u0E17\u0E22",
-  en: "English",
-  vi: "Tiếng Việt",
-  id: "Bahasa Indonesia",
-  my: "မြန်မာ",
-  ja: "日本語",
-  ko: "한국어",
-  tl: "Filipino",
-  hi: "हिन्दी",
-  tr: "Türkçe",
-  fr: "Français",
-  ms: "Bahasa Melayu",
-  km: "ភាសាខ្មែរ",
-  lo: "ລາວ",
-  ar: "العربية",
-};
 
 const app = express();
 
@@ -177,9 +156,25 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-/* =========================================================
- * 基礎工具
- * ======================================================= */
+const LANG_LABELS = {
+  "zh-TW": "繁體中文",
+  "zh-CN": "简体中文",
+  th: "ไทย",
+  en: "English",
+  vi: "Tiếng Việt",
+  id: "Bahasa Indonesia",
+  my: "မြန်မာ",
+  ja: "日本語",
+  ko: "한국어",
+  tl: "Filipino",
+  hi: "हिन्दी",
+  tr: "Türkçe",
+  fr: "Français",
+  ms: "Bahasa Melayu",
+  km: "ភាសាខ្មែរ",
+  lo: "ລາວ",
+  ar: "العربية",
+};
 
 function logTiming(label, startAt, extra = "") {
   if (!LOG_TIMING) return;
@@ -209,6 +204,7 @@ async function runWithConcurrency(items, concurrency, worker) {
 
   const runnerCount = Math.max(1, Math.min(concurrency, items.length));
   await Promise.all(Array.from({ length: runnerCount }, () => runner()));
+
   return results;
 }
 
@@ -240,145 +236,97 @@ function formatDateTime(dateString) {
   });
 }
 
-function parsePositiveInt(value, defaultValue = 1) {
-  const num = Number(value);
-  if (!Number.isInteger(num) || num <= 0) return defaultValue;
-  return num;
+function getPlanTypeLabel(planType, groupLimit = null) {
+  switch (planType) {
+    case "free_trial":
+      return "免費試用";
+    case "trial_7days":
+      return "7天試用";
+    case "limited_groups":
+      return groupLimit ? `${groupLimit}群方案` : "限制群組方案";
+    case "unlimited_groups":
+      return "不限群組方案";
+    default:
+      return planType || "未開通";
+  }
 }
 
-function cleanupTranslation(text = "") {
-  return String(text || "")
-    .replace(/^\s*翻譯[:：]\s*/i, "")
-    .replace(/^\s*translation[:：]\s*/i, "")
-    .replace(/^\s*(繁體中文|繁中|中文|簡體中文|简体中文|泰文|\u0E44\u0E17\u0E22|英文|English|越南文|印尼文|日文|韓文|韩文)[:：]\s*/i, "")
-    .replace(/^\s*【[^】]{1,20}】\s*/i, "")
-    .replace(/^["「『]+|["」』]+$/g, "")
-    .trim();
+function getPlanDisplayLabel(plan) {
+  if (!plan) return "未開通";
+  return getPlanTypeLabel(plan.plan_type, plan.group_limit);
 }
 
-function normalizeComparableText(text = "") {
-  return cleanupTranslation(text)
-    .replace(/\s+/g, "")
-    .replace(/[「」『』"'`]/g, "")
-    .trim()
-    .toLowerCase();
-}
+function isPlanActive(plan) {
+  if (!plan) return false;
 
-function isSameText(a = "", b = "") {
-  return normalizeComparableText(a) === normalizeComparableText(b);
-}
-
-function hasChinese(text = "") {
-  return /[\u4E00-\u9FFF]/.test(String(text || ""));
-}
-
-function hasThai(text = "") {
-  return /[\u0E00-\u0E7F]/.test(String(text || ""));
-}
-
-function hasMyanmar(text = "") {
-  return /[\u1000-\u109F]/.test(String(text || ""));
-}
-
-function hasJapanese(text = "") {
-  return /[\u3040-\u30FF\u31F0-\u31FF]/.test(String(text || ""));
-}
-
-function hasKorean(text = "") {
-  return /[\uAC00-\uD7AF]/.test(String(text || ""));
-}
-
-function hasArabic(text = "") {
-  return /[\u0600-\u06FF]/.test(String(text || ""));
-}
-
-function hasHindi(text = "") {
-  return /[\u0900-\u097F]/.test(String(text || ""));
-}
-
-function hasKhmer(text = "") {
-  return /[\u1780-\u17FF]/.test(String(text || ""));
-}
-
-function hasLao(text = "") {
-  return /[\u0E80-\u0EFF]/.test(String(text || ""));
-}
-
-function isMixedChineseThai(text = "") {
-  return hasChinese(text) && hasThai(text);
-}
-
-function detectChineseVariant(text = "") {
-  const t = String(text || "");
-
-  // 常見繁體專用字
-  const traditionalOnlyCount = (t.match(/[這個們來會說話間點後過還沒嗎麼為裡給買賣開關聽對應該讓辦幫頭裡臺灣]/g) || []).length;
-
-  // 常見簡體專用字
-  const simplifiedOnlyCount = (t.match(/[这个们来会说话间点后过还没吗么为里给买卖开关听对应该让办帮头里台湾]/g) || []).length;
-
-  if (simplifiedOnlyCount > traditionalOnlyCount) return "zh-CN";
-  if (traditionalOnlyCount > simplifiedOnlyCount) return "zh-TW";
-
-  // 判斷不出來時，預設繁體，符合台灣使用場景
-  return "zh-TW";
-}
-
-function detectLatinLangHeuristic(text = "") {
-  const t = String(text || "").toLowerCase();
-
-  // 越南文常見聲調字
-  if (/[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(t)) {
-    return "vi";
+  if (plan.plan_type === "free_trial") {
+    return true;
   }
 
-  // 土耳其文特殊字
-  if (/[çğıöşü]/i.test(t)) return "tr";
+  if (!plan.vip_expires_at) return false;
+  return new Date(plan.vip_expires_at).getTime() > Date.now();
+}
 
-  // 法文常見字
-  if (/[àâæçéèêëîïôœùûüÿ]/i.test(t)) return "fr";
+function canUseGroup(plan, groupId) {
+  if (!plan) return false;
 
-  // 印尼 / 馬來常見詞，僅作弱判斷
-  if (/\b(aku|gue|gua|saya|kamu|anda|dia|tidak|nggak|gak|bisa|terima|kasih|berapa|dimana|kenapa|karena|lagi|sudah|belum)\b/i.test(t)) {
-    return "id";
-  }
-  if (/\b(saya|awak|anda|tidak|boleh|terima kasih|kenapa|kerana|berapa|sudah|belum)\b/i.test(t)) {
-    return "ms";
+  if (plan.plan_type === "trial_7days") {
+    return true;
   }
 
-  return "en";
+  if (plan.plan_type === "free_trial") {
+    const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
+    if (groups.includes(groupId)) return true;
+    return groups.length < 1;
+  }
+
+  if (plan.plan_type === "unlimited_groups") {
+    return true;
+  }
+
+  if (plan.plan_type === "limited_groups") {
+    const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
+    const limit = Number(plan.group_limit || 0);
+    if (groups.includes(groupId)) return true;
+    return groups.length < limit;
+  }
+
+  return false;
 }
 
 function detectSourceLangSimple(text = "") {
   const t = String(text || "").trim();
+
   if (!t) return "auto";
 
+  const thaiCount = (t.match(/[\u0E00-\u0E7F]/g) || []).length;
   const chineseCount = (t.match(/[\u4E00-\u9FFF]/g) || []).length;
+  const latinCount = (t.match(/[A-Za-z]/g) || []).length;
+  const myCount = (t.match(/[\u1000-\u109F]/g) || []).length;
+  const jaCount = (t.match(/[\u3040-\u30FF\u31F0-\u31FF]/g) || []).length;
+  const koCount = (t.match(/[\uAC00-\uD7AF]/g) || []).length;
+  const arCount = (t.match(/[\u0600-\u06FF]/g) || []).length;
+  const hiCount = (t.match(/[\u0900-\u097F]/g) || []).length;
+  const kmCount = (t.match(/[\u1780-\u17FF]/g) || []).length;
+  const loCount = (t.match(/[\u0E80-\u0EFF]/g) || []).length;
 
   const counts = [
-    ["th", (t.match(/[\u0E00-\u0E7F]/g) || []).length],
-    ["zh", chineseCount],
-    ["my", (t.match(/[\u1000-\u109F]/g) || []).length],
-    ["ja", (t.match(/[\u3040-\u30FF\u31F0-\u31FF]/g) || []).length],
-    ["ko", (t.match(/[\uAC00-\uD7AF]/g) || []).length],
-    ["ar", (t.match(/[\u0600-\u06FF]/g) || []).length],
-    ["hi", (t.match(/[\u0900-\u097F]/g) || []).length],
-    ["km", (t.match(/[\u1780-\u17FF]/g) || []).length],
-    ["lo", (t.match(/[\u0E80-\u0EFF]/g) || []).length],
+    ["th", thaiCount],
+    ["zh-TW", chineseCount],
+    ["en", latinCount],
+    ["my", myCount],
+    ["ja", jaCount],
+    ["ko", koCount],
+    ["ar", arCount],
+    ["hi", hiCount],
+    ["km", kmCount],
+    ["lo", loCount],
   ].sort((a, b) => b[1] - a[1]);
 
   const [topLang, topCount] = counts[0];
+  if (!topCount || topCount <= 0) return "auto";
 
-  if (topCount && topCount > 0) {
-    if (topLang === "zh") return detectChineseVariant(t);
-    return topLang;
-  }
-
-  if (/[A-Za-zÀ-ỹÇĞİÖŞÜçğıöşü]/.test(t)) {
-    return detectLatinLangHeuristic(t);
-  }
-
-  return "auto";
+  return topLang;
 }
 
 function getLangPureName(lang) {
@@ -402,6 +350,233 @@ function getLangPureName(lang) {
     ar: "阿拉伯文",
   };
   return map[lang] || lang;
+}
+
+function hasChinese(text = "") {
+  return /[\u4E00-\u9FFF]/.test(String(text || ""));
+}
+
+function hasThai(text = "") {
+  return /[\u0E00-\u0E7F]/.test(String(text || ""));
+}
+
+function isMixedChineseThai(text = "") {
+  return hasChinese(text) && hasThai(text);
+}
+
+function cleanupTranslation(text = "") {
+  return String(text || "")
+    .replace(/^\s*翻譯[:：]\s*/i, "")
+    .replace(/^\s*translation[:：]\s*/i, "")
+    .replace(/^["「『]+|["」』]+$/g, "")
+    .trim();
+}
+
+function normalizeComparableText(text = "") {
+  return cleanupTranslation(text)
+    .replace(/\s+/g, "")
+    .replace(/[「」『』"'`]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function isSameText(a = "", b = "") {
+  return normalizeComparableText(a) === normalizeComparableText(b);
+}
+
+function dedupeTranslatedOutputs(blocks = []) {
+  const seen = new Set();
+  const result = [];
+
+  for (const block of blocks) {
+    const body = String(block || "")
+      .split("\n")
+      .slice(1)
+      .join("\n")
+      .trim();
+
+    const key = normalizeComparableText(body);
+    if (!key) continue;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    result.push(block);
+  }
+
+  return result;
+}
+
+function removeAllowedOriginalTerms(text = "", fixedTerms = []) {
+  let out = String(text || "");
+
+  for (const item of fixedTerms) {
+    if (item?.src && item.target === item.src) {
+      out = out.split(item.src).join("");
+    }
+  }
+
+  return out;
+}
+
+function hasWrongScriptForTarget(text = "", targetLang, fixedTerms = []) {
+  const clean = cleanupTranslation(text);
+  if (!clean) return false;
+
+  if (targetLang === "th") {
+    return hasChinese(clean);
+  }
+
+  if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+    const withoutAllowed = removeAllowedOriginalTerms(clean, fixedTerms);
+    return hasThai(withoutAllowed);
+  }
+
+  if (targetLang === "en") {
+    return /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(clean);
+  }
+
+  return false;
+}
+
+function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
+  let out = cleanupTranslation(text);
+  const placeholders = [];
+
+  for (const item of fixedTerms) {
+    if (item?.src && item.target === item.src) {
+      const token = `__FIXED_TERM_${placeholders.length}__`;
+      placeholders.push({ token, value: item.src });
+      out = out.split(item.src).join(token);
+    }
+  }
+
+  out = out
+    .replace(/นะคะ/g, "喔")
+    .replace(/นะครับ/g, "喔")
+    .replace(/ค่ะ/g, "喔")
+    .replace(/ครับ/g, "喔")
+    .replace(/คะ/g, "嗎")
+    .trim();
+
+  for (const { token, value } of placeholders) {
+    out = out.split(token).join(value);
+  }
+
+  return out;
+}
+
+function normalizeThaiShortKey(text = "") {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
+  const key = normalizeThaiShortKey(text);
+  const translated = THAI_SHORT_CHAT_DIRECT_ZH_MAP[key] || null;
+
+  if (!translated) return null;
+
+  if (targetLang === "zh-CN") {
+    return translated.replace(/還/g, "还").replace(/沒/g, "没").replace(/嗎/g, "吗");
+  }
+
+  return translated;
+}
+
+function isVeryShortText(text = "") {
+  const cleaned = String(text || "").trim().replace(/\s+/g, "");
+  return cleaned.length > 0 && cleaned.length <= 14;
+}
+
+function looksLikeThaiShortChat(text = "") {
+  if (!hasThai(text)) return false;
+
+  const t = String(text || "").trim().toLowerCase();
+
+  return (
+    isVeryShortText(t) ||
+    /^(ยัง|ยังคะ|ยังค่ะ|ยังครับ|ยังไหม|ยังมั้ย|ยังหรอ|ยังเหรอ|ได้|ได้ค่ะ|ได้คะ|ได้ครับ|ค่ะ|คะ|ครับ|หรอ|เหรอ|อ่อ|อืม|จ้า|จ๋า|นะ|น้า|อยู่ไหม|อยู่มั้ย|หายไปไหน|โอเคไหม|ได้ไหม|มาไหม|ไม่|ไม่คะ|ไม่ค่ะ|ไม่ครับ|ไม่เอา|เอา)$/.test(
+      t
+    )
+  );
+}
+
+function looksLikeThaiDialectText(text = "") {
+  const t = String(text || "").trim();
+  if (!hasThai(t)) return false;
+
+  if (isVeryShortText(t)) return true;
+
+  return /เด้อ|บ่|อีหลี|หลายอยู่|นิ|แหลง|หรอย|ก่อ|เน้อ|จะได|เฮา|ข้อย/.test(t);
+}
+
+function looksLikeNamedEntityShortText(text = "") {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (!hasThai(t)) return false;
+
+  const noSpace = t.replace(/\s+/g, "");
+  return noSpace.length >= 2 && noSpace.length <= 30 && !/[。，！？.!?]/.test(t);
+}
+
+function looksLikePossiblePlaceName(text = "") {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (!hasThai(t)) return false;
+  if (t.includes(" ")) return false;
+
+  const noSpaceLen = t.replace(/\s+/g, "").length;
+
+  return (
+    noSpaceLen >= 4 &&
+    noSpaceLen <= 20 &&
+    !/[0-9]/.test(t) &&
+    !/[。，！？.!?]/.test(t)
+  );
+}
+
+function getMatchedFixedTerms(text = "") {
+  const matched = [];
+
+  for (const [src, target] of Object.entries(FIXED_TERM_MAP)) {
+    if (String(text || "").includes(src)) {
+      matched.push({ src, target });
+    }
+  }
+
+  return matched;
+}
+
+function buildFixedTermsHint(text = "") {
+  const matched = getMatchedFixedTerms(text);
+  if (!matched.length) return "";
+
+  return [
+    "【固定術語表】",
+    ...matched.map((item) => `${item.src} => ${item.target}`),
+    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。",
+  ].join("\n");
+}
+
+function getMatchedContextTypos(text = "") {
+  const t = String(text || "");
+  return CONTEXT_TYPO_MAP.filter((item) => t.includes(item.wrong));
+}
+
+function buildContextTypoHint(text = "") {
+  const matched = getMatchedContextTypos(text);
+  if (!matched.length) return "";
+
+  return [
+    "【情境糾錯規則】",
+    ...matched.map(
+      (item) => `${item.wrong} 可能是 ${item.intended}，中文優先翻成「${item.zh}」`
+    ),
+    ...matched.map((item) => item.hint),
+    "若上下文是在對真人說話，不可翻成機器人。",
+  ].join("\n");
 }
 
 function normalizeLangList(langs = []) {
@@ -429,173 +604,21 @@ function safeTranslatedLine(lang, translated, options = {}) {
   return `【${LANG_LABELS[lang] || lang}】\n${clean}`;
 }
 
-function dedupeTranslatedOutputs(blocks = []) {
-  const seen = new Set();
-  const result = [];
-
-  for (const block of blocks) {
-    const body = String(block || "")
-      .split("\n")
-      .slice(1)
-      .join("\n")
-      .trim();
-
-    const key = normalizeComparableText(body);
-    if (!key) continue;
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    result.push(block);
+function getGroupLimitText(plan) {
+  if (!plan) return "未設定";
+  if (
+    plan.plan_type === "unlimited_groups" ||
+    plan.plan_type === "trial_7days"
+  ) {
+    return "不限";
   }
-
-  return result;
+  return String(plan.group_limit ?? "1");
 }
 
-/* =========================================================
- * 翻譯判斷與防呆
- * ======================================================= */
-
-function normalizeThaiShortKey(text = "") {
-  return String(text || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "");
-}
-
-function getDirectThaiShortChinese(text = "", targetLang = "zh-TW") {
-  const key = normalizeThaiShortKey(text);
-  const translated = THAI_SHORT_CHAT_DIRECT_ZH_MAP[key] || null;
-  if (!translated) return null;
-
-  if (targetLang === "zh-CN") {
-    return translated
-      .replace(/還/g, "还")
-      .replace(/沒/g, "没")
-      .replace(/嗎/g, "吗")
-      .replace(/係/g, "系");
-  }
-
-  return translated;
-}
-
-function isVeryShortText(text = "") {
-  const cleaned = String(text || "").trim().replace(/\s+/g, "");
-  return cleaned.length > 0 && cleaned.length <= 14;
-}
-
-function looksLikeThaiShortChat(text = "") {
-  if (!hasThai(text)) return false;
-  const t = String(text || "").trim().toLowerCase();
-
-  return (
-    isVeryShortText(t) ||
-    /^(\u0E22\u0E31\u0E07|\u0E22\u0E31\u0E07\u0E04\u0E30|\u0E22\u0E31\u0E07\u0E04\u0E48\u0E30|\u0E22\u0E31\u0E07\u0E04\u0E23\u0E31\u0E1A|\u0E22\u0E31\u0E07\u0E44\u0E2B\u0E21|\u0E22\u0E31\u0E07\u0E21\u0E31\u0E49\u0E22|\u0E22\u0E31\u0E07\u0E2B\u0E23\u0E2D|\u0E22\u0E31\u0E07\u0E40\u0E2B\u0E23\u0E2D|\u0E44\u0E14\u0E49|\u0E44\u0E14\u0E49\u0E04\u0E48\u0E30|\u0E44\u0E14\u0E49\u0E04\u0E30|\u0E44\u0E14\u0E49\u0E04\u0E23\u0E31\u0E1A|\u0E04\u0E48\u0E30|\u0E04\u0E30|\u0E04\u0E23\u0E31\u0E1A|\u0E2B\u0E23\u0E2D|\u0E40\u0E2B\u0E23\u0E2D|\u0E2D\u0E48\u0E2D|\u0E2D\u0E37\u0E21|\u0E08\u0E49\u0E32|\u0E08\u0E4B\u0E32|\u0E19\u0E30|\u0E19\u0E49\u0E32|\u0E2D\u0E22\u0E39\u0E48\u0E44\u0E2B\u0E21|\u0E2D\u0E22\u0E39\u0E48\u0E21\u0E31\u0E49\u0E22|\u0E2B\u0E32\u0E22\u0E44\u0E1B\u0E44\u0E2B\u0E19|\u0E42\u0E2D\u0E40\u0E04\u0E44\u0E2B\u0E21|\u0E44\u0E14\u0E49\u0E44\u0E2B\u0E21|\u0E21\u0E32\u0E44\u0E2B\u0E21|\u0E44\u0E21\u0E48|\u0E44\u0E21\u0E48\u0E04\u0E30|\u0E44\u0E21\u0E48\u0E04\u0E48\u0E30|\u0E44\u0E21\u0E48\u0E04\u0E23\u0E31\u0E1A|\u0E44\u0E21\u0E48\u0E40\u0E2D\u0E32|\u0E40\u0E2D\u0E32)$/.test(
-      t
-    )
-  );
-}
-
-function looksLikeThaiDialectText(text = "") {
-  const t = String(text || "").trim();
-  if (!hasThai(t)) return false;
-  if (isVeryShortText(t)) return true;
-  return /\u0E40\u0E14\u0E49\u0E2D|\u0E1A\u0E48|\u0E2D\u0E35\u0E2B\u0E25\u0E35|\u0E2B\u0E25\u0E32\u0E22\u0E2D\u0E22\u0E39\u0E48|\u0E19\u0E34|\u0E41\u0E2B\u0E25\u0E07|\u0E2B\u0E23\u0E2D\u0E22|\u0E01\u0E48\u0E2D|\u0E40\u0E19\u0E49\u0E2D|\u0E08\u0E30\u0E44\u0E14|\u0E40\u0E2E\u0E32|\u0E02\u0E49\u0E2D\u0E22|\u0E40\u0E08\u0E49\u0E32|\u0E08\u0E49\u0E32\u0E27/.test(t);
-}
-
-function looksLikeNamedEntityShortText(text = "") {
-  const t = String(text || "").trim();
-  if (!t || !hasThai(t)) return false;
-  const noSpace = t.replace(/\s+/g, "");
-  return noSpace.length >= 2 && noSpace.length <= 30 && !/[。，！？.!?]/.test(t);
-}
-
-function looksLikePossiblePlaceName(text = "") {
-  const t = String(text || "").trim();
-  if (!t || !hasThai(t)) return false;
-  if (t.includes(" ")) return false;
-
-  const noSpaceLen = t.replace(/\s+/g, "").length;
-  return (
-    noSpaceLen >= 4 &&
-    noSpaceLen <= 20 &&
-    !/[0-9]/.test(t) &&
-    !/[。，！？.!?]/.test(t)
-  );
-}
-
-function getMatchedFixedTerms(text = "") {
-  const matched = [];
-  for (const [src, target] of Object.entries(FIXED_TERM_MAP)) {
-    if (String(text || "").includes(src)) {
-      matched.push({ src, target });
-    }
-  }
-  return matched;
-}
-
-function buildFixedTermsHint(text = "") {
-  const matched = getMatchedFixedTerms(text);
-  if (!matched.length) return "";
-
-  return [
-    "【固定術語表】",
-    ...matched.map((item) => `${item.src} => ${item.target}`),
-    "以上詞語必須固定使用，不可改寫，不可換成其他猜測地名、人名或店名。",
-  ].join("\n");
-}
-
-function buildContextTypoHint(text = "") {
-  const matched = CONTEXT_TYPO_RULES.filter((item) => item.test(text));
-  if (!matched.length) return "";
-
-  return [
-    "【情境糾錯規則】",
-    ...matched.map((item) => item.hint),
-    "若上下文不能確認，不要硬改；以原句正常意思為準。",
-  ].join("\n");
-}
-
-function getScriptViolation(text = "", targetLang, fixedTerms = []) {
-  const clean = cleanupTranslation(text);
-  if (!clean) return null;
-
-  const protectedTerms = new Set(
-    fixedTerms
-      .filter((item) => item?.src && item?.target === item?.src)
-      .map((item) => item.src)
-  );
-
-  let checkText = clean;
-  for (const term of protectedTerms) {
-    checkText = checkText.split(term).join("");
-  }
-
-  if (targetLang === "th" && hasChinese(checkText)) {
-    return "翻成泰文時不可殘留中文";
-  }
-
-  if ((targetLang === "zh-TW" || targetLang === "zh-CN") && hasThai(checkText)) {
-    return "翻成中文時不可殘留泰文";
-  }
-
-  if (targetLang === "en" && /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(checkText)) {
-    return "翻成英文時不可殘留中文或泰文";
-  }
-
-  return null;
-}
-
-function mustUseSingleTranslate(text = "", targetLangs = []) {
-  if (looksLikeThaiShortChat(text)) return true;
-  if (looksLikeThaiDialectText(text)) return true;
-  if (isMixedChineseThai(text)) return true;
-  if (looksLikeNamedEntityShortText(text)) return true;
-  if (getMatchedFixedTerms(text).length) return true;
-
-  // 只要目標含泰文且來源含中文，先走單語，避免「姐姐」這類中文殘留在泰文中
-  if (hasChinese(text) && targetLangs.includes("th")) return true;
-
-  return false;
+function parsePositiveInt(value, defaultValue = 1) {
+  const num = Number(value);
+  if (!Number.isInteger(num) || num <= 0) return defaultValue;
+  return num;
 }
 
 function buildStableInstructions({ targetLang, specialHint = "" }) {
@@ -605,7 +628,7 @@ function buildStableInstructions({ targetLang, specialHint = "" }) {
 你是專業聊天翻譯員，只做翻譯，不聊天，不解釋。
 
 你的唯一任務：
-把使用者內容完整翻成「${targetName}」。
+把使用者內容翻成「${targetName}」。
 
 硬性規則：
 1. 只輸出最終翻譯結果
@@ -614,20 +637,10 @@ function buildStableInstructions({ targetLang, specialHint = "" }) {
 4. 不可補內容，不可刪內容
 5. 不可把原文和翻譯一起輸出
 6. 要保留原句強度、語氣、簡短程度
-7. 聊天句要自然，但不可擴寫，短句就翻短句
-8. 不可把普通聊天句改成正式公告、道歉文、感謝文
-9. 不可自行加「謝謝、辛苦了、拜託、麻煩你、親愛的」等客套，除非原文真的有
-10. 必須完整翻成目標語言，不可漏字、不可漏否定、不可漏時間、金額、地址、房號、數字
-11. 不可保留原文中的其他語言文字；普通稱呼、人稱、名詞都要翻成目標語言
-12. 若目標語言是泰文，中文稱呼、人稱、一般名詞都必須翻成泰文，不可保留中文字
-13. 若目標語言是中文，泰文語氣詞、人稱、一般名詞都必須翻成中文，不可保留泰文字
-14. 若目標語言是英文，不可混入中文或泰文
-15. 原文中的數字、金額、LINE ID、@帳號、電話、網址、房號、表情符號要保留，不可亂改
-16. LINE、FB、IG、TikTok、Google、YouTube 等品牌名稱可保留原寫法
-17. 泰文「\u0E17\u0E35\u0E48」在句首不一定是「因為」；只有出現「\u0E40\u0E1E\u0E23\u0E32\u0E30 / \u0E40\u0E19\u0E37\u0E48\u0E2D\u0E07\u0E08\u0E32\u0E01」等明確因果詞，才翻成因為
-18. 「\u0E42\u0E2D\u0E40\u0E04 / ok / okay」只有表示同意時才翻成「好」；若只是語氣填充，可依語境省略
-19. 若原文有口語、誤拼、方言，只能做合理語意修正，不可自行編故事
-20. 專有名詞沒有正式譯名時，使用目標語言可讀的音譯或自然表達，不要原字照抄造成混語
+7. 聊天句要自然，但不可擴寫
+8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ
+9. 若目標語言是泰文，不可混入中文
+10. 若原文有口語、誤拼、方言，只能做合理語意修正，不可自行編故事
 
 補充提示：
 ${specialHint || "無"}
@@ -654,18 +667,11 @@ function buildMultiStableInstructions({ targetLangs, specialHint = "" }) {
 2. 不可把原文和翻譯一起輸出
 3. 不可加前綴、引號外說明、註解
 4. 忠實保留原意，不增加、不刪減
-5. 聊天句自然，但不可擴寫，短句就翻短句
-6. 不可自行加客套、感謝、道歉、安撫語，除非原文真的有
-7. 每個 value 都必須完整翻成對應目標語言，不可漏字、漏否定、漏時間、漏金額、漏地址
-8. 不可在任何 value 中保留原文的其他語言文字；普通稱呼、人稱、名詞都要翻成該 value 的目標語言
-9. 翻成泰文時，不可混入中文
-10. 翻成中文時，不可殘留泰文
-11. 數字、金額、LINE ID、@帳號、電話、網址、房號、表情符號要保留，不可亂改
-12. LINE、FB、IG、TikTok、Google、YouTube 等品牌名稱可保留原寫法
-13. 泰文「\u0E17\u0E35\u0E48」在句首不一定是「因為」；只有出現「\u0E40\u0E1E\u0E23\u0E32\u0E30 / \u0E40\u0E19\u0E37\u0E48\u0E2D\u0E07\u0E08\u0E32\u0E01」等明確因果詞，才翻成因為
-14. 「\u0E42\u0E2D\u0E40\u0E04 / ok / okay」只有表示同意時才翻成「好」；若只是語氣填充，可依語境省略
-15. 若有固定術語，必須遵守
-16. 若有口語、短句、誤拼，依聊天語境自然翻譯，不可自行編故事
+5. 聊天句自然，但不可擴寫
+6. 翻成中文時，不可殘留泰文語氣詞
+7. 翻成泰文時，不可混入中文
+8. 若有固定術語，必須遵守
+9. 若有口語、短句、誤拼，依聊天語境自然翻譯
 
 補充提示：
 ${specialHint || "無"}
@@ -674,66 +680,6 @@ ${specialHint || "無"}
 ${targetLangs.map((lang) => `${lang} = ${getLangPureName(lang)}`).join("\n")}
   `.trim();
 }
-
-function collectSpecialHint(text, targetLang = null) {
-  const sourceLang = detectSourceLangSimple(text);
-  const thaiShortChat = looksLikeThaiShortChat(text);
-  const thaiDialect = looksLikeThaiDialectText(text);
-  const mixedZhTh = isMixedChineseThai(text);
-  const namedEntityShort = looksLikeNamedEntityShortText(text);
-  const fixedTerms = getMatchedFixedTerms(text);
-
-  let specialHint = "";
-
-  if (fixedTerms.length) {
-    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
-  }
-
-  if (thaiShortChat) {
-    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
-  }
-
-  if (thaiDialect) {
-    specialHint += " 這段可能是泰文口語或方言，請依對話情境翻譯成自然用語。";
-  }
-
-  if (mixedZhTh) {
-    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
-  }
-
-  if (namedEntityShort) {
-    specialHint +=
-      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但上下文更像在稱呼真人，請優先依情境修正。";
-  }
-
-  if (targetLang === "th") {
-    specialHint +=
-      " 請輸出純泰文，不可混入任何中文。中文稱呼、人稱、一般名詞都要翻成泰文，不可保留中文原字。LINE、FB、IG、網址、ID、電話、數字可保留原格式。";
-  }
-
-  if (targetLang === "zh-TW") {
-    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句，不可殘留泰文，不可自行加客套。";
-  }
-
-  if (targetLang === "zh-CN") {
-    specialHint += " 請輸出自然简体中文，不可殘留泰文，不可自行加客套。";
-  }
-
-  if (targetLang === "en") {
-    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子，不可混入中文或泰文。";
-  }
-
-  return {
-    sourceLang,
-    thaiShortChat,
-    thaiDialect,
-    specialHint: specialHint.trim(),
-  };
-}
-
-/* =========================================================
- * 快取
- * ======================================================= */
 
 function buildCacheKey({
   text,
@@ -762,7 +708,12 @@ async function getTranslationCache({
   sourceHint = "auto",
   specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint, specialHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
 
   const result = await pool.query(
     `SELECT translated_text FROM translation_cache WHERE cache_key = $1 LIMIT 1`,
@@ -779,7 +730,12 @@ async function saveTranslationCache({
   sourceHint = "auto",
   specialHint = "",
 }) {
-  const cacheKey = buildCacheKey({ text, targetLang, sourceHint, specialHint });
+  const cacheKey = buildCacheKey({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
 
   await pool.query(
     `
@@ -788,7 +744,14 @@ async function saveTranslationCache({
     ON CONFLICT (cache_key)
     DO UPDATE SET translated_text = EXCLUDED.translated_text, created_at = NOW()
     `,
-    [cacheKey, text, targetLang, sourceHint, "normal", translatedText]
+    [
+      cacheKey,
+      text,
+      targetLang,
+      sourceHint,
+      "normal",
+      translatedText,
+    ]
   );
 }
 
@@ -924,34 +887,119 @@ function extractOpenAIText(response) {
   return cleanupTranslation(chunks.join("\n").trim());
 }
 
-/* =========================================================
- * OpenAI 翻譯
- * ======================================================= */
+function collectLangSpecialHint(text, targetLang) {
+  const sourceLang = detectSourceLangSimple(text);
+  const thaiShortChat = looksLikeThaiShortChat(text);
+  const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  let specialHint = "";
+
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (thaiDialect) {
+    specialHint += " 這段可能是泰文口語或方言，請依對話情境翻譯成自然用語。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但上下文更像在稱呼真人，請優先依情境修正。";
+  }
+
+  if (targetLang === "th") {
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
+  }
+
+  if (targetLang === "zh-TW") {
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+  }
+
+  if (targetLang === "zh-CN") {
+    specialHint += " 請輸出自然简体中文。";
+  }
+
+  if (targetLang === "en") {
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
+  }
+
+  return {
+    sourceLang,
+    thaiShortChat,
+    thaiDialect,
+    specialHint: specialHint.trim(),
+  };
+}
+
+function collectMultiSpecialHint(text) {
+  const sourceLang = detectSourceLangSimple(text);
+  const thaiShortChat = looksLikeThaiShortChat(text);
+  const thaiDialect = looksLikeThaiDialectText(text);
+  const mixedZhTh = isMixedChineseThai(text);
+  const namedEntityShort = looksLikeNamedEntityShortText(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  let specialHint = "";
+
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (thaiDialect) {
+    specialHint += " 這段可能是泰文口語或方言，請依對話情境翻譯成自然用語。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但上下文更像在稱呼真人，請優先依情境修正。";
+  }
+
+  return {
+    sourceLang,
+    specialHint: specialHint.trim(),
+  };
+}
 
 async function askModelTranslate({
   text,
   targetLang,
   sourceHint = "auto",
   specialHint = "",
-  bypassCache = false,
 }) {
-  if (!bypassCache) {
-    const cacheReadStart = Date.now();
-    const cached = await getTranslationCache({
-      text,
-      targetLang,
-      sourceHint,
-      specialHint,
-    });
+  const cacheReadStart = Date.now();
+  const cached = await getTranslationCache({
+    text,
+    targetLang,
+    sourceHint,
+    specialHint,
+  });
 
-    logTiming(
-      "translation_cache_read",
-      cacheReadStart,
-      `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
-    );
+  logTiming(
+    "translation_cache_read",
+    cacheReadStart,
+    `target=${targetLang} hit=${!!cached} chars=${String(text || "").length}`
+  );
 
-    if (cached) return cleanupTranslation(cached);
-  }
+  if (cached) return cleanupTranslation(cached);
 
   const fixedTermsHint = buildFixedTermsHint(text);
   const contextTypoHint = buildContextTypoHint(text);
@@ -966,21 +1014,22 @@ ${contextTypoHint || ""}
     `.trim(),
   });
 
-  const payload = {
+  const openaiStart = Date.now();
+  const response = await openai.responses.create({
     model: OPENAI_MODEL,
     temperature: 0,
+    reasoning: { effort: OPENAI_REASONING_EFFORT },
     input: [
-      { role: "developer", content: instructions },
-      { role: "user", content: String(text || "") },
+      {
+        role: "developer",
+        content: instructions,
+      },
+      {
+        role: "user",
+        content: String(text || ""),
+      },
     ],
-  };
-
-  if (OPENAI_REASONING_EFFORT && OPENAI_REASONING_EFFORT !== "none") {
-    payload.reasoning = { effort: OPENAI_REASONING_EFFORT };
-  }
-
-  const openaiStart = Date.now();
-  const response = await openai.responses.create(payload);
+  });
 
   logTiming(
     "openai_responses_create",
@@ -1000,18 +1049,16 @@ ${contextTypoHint || ""}
     throw new Error(`Empty translation output for ${targetLang}`);
   }
 
-  if (!bypassCache) {
-    void saveTranslationCache({
-      text,
-      translatedText: output,
-      targetLang,
-      sourceHint,
-      specialHint,
-    }).catch((err) => {
-      console.error("saveTranslationCache error =", err);
-      if (err?.stack) console.error(err.stack);
-    });
-  }
+  void saveTranslationCache({
+    text,
+    translatedText: output,
+    targetLang,
+    sourceHint,
+    specialHint,
+  }).catch((err) => {
+    console.error("saveTranslationCache error =", err);
+    if (err?.stack) console.error(err.stack);
+  });
 
   return cleanupTranslation(output);
 }
@@ -1039,21 +1086,8 @@ async function askModelTranslateMulti({
     `targets=${normalizedTargets.join(",")} hit=${!!cached} chars=${String(text || "").length}`
   );
 
-  const fixedTerms = getMatchedFixedTerms(text);
-
   if (cached && typeof cached === "object") {
-    let cacheOk = true;
-    for (const lang of normalizedTargets) {
-      const out = cleanupTranslation(cached?.[lang] || "");
-      if (!out || getScriptViolation(out, lang, fixedTerms)) {
-        cacheOk = false;
-        break;
-      }
-    }
-
-    if (cacheOk) return cached;
-
-    console.warn("[multi-cache-bypass] cached result failed validation, re-translating");
+    return cached;
   }
 
   const fixedTermsHint = buildFixedTermsHint(text);
@@ -1069,21 +1103,22 @@ ${contextTypoHint || ""}
     `.trim(),
   });
 
-  const payload = {
+  const openaiStart = Date.now();
+  const response = await openai.responses.create({
     model: OPENAI_MODEL,
     temperature: 0,
+    reasoning: { effort: OPENAI_REASONING_EFFORT },
     input: [
-      { role: "developer", content: instructions },
-      { role: "user", content: String(text || "") },
+      {
+        role: "developer",
+        content: instructions,
+      },
+      {
+        role: "user",
+        content: String(text || ""),
+      },
     ],
-  };
-
-  if (OPENAI_REASONING_EFFORT && OPENAI_REASONING_EFFORT !== "none") {
-    payload.reasoning = { effort: OPENAI_REASONING_EFFORT };
-  }
-
-  const openaiStart = Date.now();
-  const response = await openai.responses.create(payload);
+  });
 
   logTiming(
     "openai_multi_responses_create",
@@ -1098,22 +1133,9 @@ ${contextTypoHint || ""}
     throw new Error("Multi-translation JSON parse failed");
   }
 
-  // fixedTerms 已在快取驗證前建立
   const cleaned = {};
-
   for (const lang of normalizedTargets) {
-    const out = cleanupTranslation(parsed[lang] || "");
-    if (!out) {
-      cleaned[lang] = "";
-      continue;
-    }
-
-    const violation = getScriptViolation(out, lang, fixedTerms);
-    if (violation) {
-      throw new Error(`Multi-translation script violation: ${lang} ${violation}`);
-    }
-
-    cleaned[lang] = out;
+    cleaned[lang] = cleanupTranslation(parsed[lang] || "");
   }
 
   void saveMultiTranslationCache({
@@ -1131,8 +1153,6 @@ ${contextTypoHint || ""}
 }
 
 async function verifyPlaceNameOnline(text) {
-  // 目前不做外部查詢，避免 webhook 變慢或外部服務不穩。
-  // 若未來要做地名查詢，建議改成離線字典 + 快取。
   return {
     found: false,
     zhName: null,
@@ -1142,10 +1162,12 @@ async function verifyPlaceNameOnline(text) {
 }
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
+  const targetName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
+  const fixedTerms = getMatchedFixedTerms(text);
+  const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
+
   const direct = getDirectThaiShortChinese(text, targetLang);
   if (direct) return direct;
-
-  const targetName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
 
   return await askModelTranslate({
     text,
@@ -1156,12 +1178,20 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 
 重要規則：
 1. 所有泰文都必須翻成中文，不可殘留任何泰文字
-2. 包含語氣詞、禮貌詞如「\u0E04\u0E30 / \u0E04\u0E48\u0E30 / \u0E04\u0E23\u0E31\u0E1A」也必須翻掉，不可保留原文
-3. 像「\u0E44\u0E21\u0E48\u0E04\u0E48\u0E30 / \u0E44\u0E21\u0E48\u0E04\u0E23\u0E31\u0E1A」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
-4. 像「\u0E44\u0E14\u0E49\u0E04\u0E48\u0E30 / \u0E44\u0E14\u0E49\u0E04\u0E23\u0E31\u0E1A」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
-5. 像「\u0E22\u0E31\u0E07 / \u0E22\u0E31\u0E07\u0E04\u0E48\u0E30 / \u0E22\u0E31\u0E07\u0E04\u0E23\u0E31\u0E1A」這類短句非常依賴上下文：回答時通常是「還沒 / 還沒喔」；追問時依語境翻成「還沒嗎？/ 還在嗎？/ 還有嗎？/ 好了嗎？」
+2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
+3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
+4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
+5. 像「ยัง / ยังค่ะ / ยังครับ」這類短句非常依賴上下文：
+- 若是在回答別人的問題，通常翻成「還沒 / 還沒喔」
+- 若是在追問進度或狀態，依語境翻成「還沒嗎？/ 還在嗎？/ 還有嗎？/ 好了嗎？」
+- 不可直譯成不自然的「還嗎」
 6. 不可逐字硬翻，要翻成自然聊天中文
-輸出必須是純${targetName}。
+
+${
+  allowOriginalTerm
+    ? "若固定術語表指定保留原詞，只有該固定詞可保留原樣，其餘泰文仍必須翻成中文。"
+    : `輸出必須是純${targetName}。`
+}
     `.trim(),
   });
 }
@@ -1186,15 +1216,47 @@ async function translateToTarget(text, targetLang) {
     }
   }
 
-  const { specialHint } = collectSpecialHint(text, targetLang);
+  let specialHint = "";
 
-  const askOnce = async (extraHint = "", bypassCache = false) => {
+  if (fixedTerms.length) {
+    specialHint += " 這句包含固定術語，必須優先使用固定術語表，不可自行改寫。";
+  }
+
+  if (thaiShortChat) {
+    specialHint += " 這是泰文超短聊天句，請翻成自然口語，不可逐字硬翻。";
+  }
+
+  if (mixedZhTh) {
+    specialHint += " 這是中泰混合內容，請依整句語意整理成目標語言，不要漏掉任一部分。";
+  }
+
+  if (namedEntityShort) {
+    specialHint +=
+      " 這句可能含專有名詞或聊天誤拼。若某個詞看似專有名詞，但依上下文更像是在稱呼真人，例如老闆、主管、客人、女生、男生，請優先依情境修正，不要只按字面翻譯。若無法確認正式中文，請優先遵守固定術語表；若固定術語表未指定，再用目標語言可讀形式表達。";
+  }
+
+  if (targetLang === "th") {
+    specialHint += " 請輸出自然泰文，但不可自行加禮貌或加長句子。";
+  }
+
+  if (targetLang === "zh-TW") {
+    specialHint += " 請輸出自然繁體中文，不要中國式生硬書面句。";
+  }
+
+  if (targetLang === "zh-CN") {
+    specialHint += " 請輸出自然简体中文。";
+  }
+
+  if (targetLang === "en") {
+    specialHint += " 請輸出自然英文，但不可自行補成更完整或更客氣的句子。";
+  }
+
+  const askOnce = async (extraHint = "") => {
     return await askModelTranslate({
       text,
       targetLang,
       sourceHint: sourceLang,
       specialHint: `${specialHint} ${extraHint}`.trim(),
-      bypassCache,
     });
   };
 
@@ -1220,11 +1282,10 @@ async function translateToTarget(text, targetLang) {
   let retryCount = 0;
 
   while (retryCount < MAX_TRANSLATION_RETRIES) {
-    const clean = cleanupTranslation(output);
-    const sameAsInput = shouldRetrySameAsInput(clean);
-    const violation = getScriptViolation(clean, targetLang, fixedTerms);
+    const sameAsInput = shouldRetrySameAsInput(output);
+    const wrongScript = hasWrongScriptForTarget(output, targetLang, fixedTerms);
 
-    if (!sameAsInput && !violation) {
+    if (!sameAsInput && !wrongScript) {
       break;
     }
 
@@ -1234,46 +1295,39 @@ async function translateToTarget(text, targetLang) {
       extraHints.push(`這次必須真正翻成${targetName}，不可原樣輸出來源文字。`);
     }
 
-    if (violation) {
-      extraHints.push(`
-上一版翻譯有問題：${violation}
-請重新從原文翻譯，不要修補上一版。
-目標語言是 ${targetName}。
-只能輸出 ${targetName}。
-不可保留原文中的其他語言文字。
-中文、泰文、英文、人稱、稱呼、一般名詞都必須翻成目標語言。
-不可混合語言。
-      `.trim());
+    if (wrongScript) {
+      if (targetLang === "th") {
+        extraHints.push("只可輸出純泰文，不可出現中文。");
+      } else if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+        extraHints.push(
+          "只可輸出純中文，不可出現任何泰文；包含「คะ / ค่ะ / ครับ」也必須翻成中文語氣。"
+        );
+      } else if (targetLang === "en") {
+        extraHints.push("只可輸出純英文，不可出現中文或泰文。");
+      }
     }
 
     console.warn(
-      `[translate-retry] target=${targetLang} retry=${retryCount + 1} sameAsInput=${sameAsInput} violation=${violation || "none"}`
+      `[translate-retry] target=${targetLang} retry=${retryCount + 1} sameAsInput=${sameAsInput} wrongScript=${wrongScript}`
     );
 
-    output = await askOnce(extraHints.join("\n"), true);
+    output = await askOnce(extraHints.join(" "));
     retryCount += 1;
   }
 
-  const finalViolation = getScriptViolation(output, targetLang, fixedTerms);
+  if (targetLang === "zh-TW" || targetLang === "zh-CN") {
+    output = cleanupResidualThaiInChinese(output, fixedTerms);
 
-  if (finalViolation) {
-    console.warn(`[translate-final-violation] target=${targetLang} ${finalViolation} output=${output}`);
+    if (hasWrongScriptForTarget(output, targetLang, fixedTerms)) {
+      output = await askModelTranslate({
+        text: output,
+        targetLang,
+        sourceHint: "含少量殘留泰文的中文翻譯結果",
+        specialHint: `請把這句整理成純${targetName}，不可保留任何泰文，尤其不可保留「คะ / ค่ะ / ครับ」。只輸出整理後結果。`,
+      });
 
-    // 不直接刪字，避免把意思刪掉。最後再請模型整理一次。
-    output = await askModelTranslate({
-      text,
-      targetLang,
-      sourceHint: sourceLang,
-      bypassCache: true,
-      specialHint: `
-最後重翻。
-上一版仍然混入錯誤語言文字：${finalViolation}
-請從原文重新翻成「${targetName}」。
-只輸出純「${targetName}」。
-不可保留任何非目標語言文字。
-不可解釋。
-      `.trim(),
-    });
+      output = cleanupResidualThaiInChinese(output, fixedTerms);
+    }
   }
 
   return cleanupTranslation(output);
@@ -1283,15 +1337,7 @@ async function translateToTargets(text, targetLangs) {
   const normalizedTargets = normalizeLangList(targetLangs || []);
   if (!normalizedTargets.length) return {};
 
-  const { sourceLang, specialHint } = collectSpecialHint(text, null);
-
-  if (mustUseSingleTranslate(text, normalizedTargets)) {
-    const singleResults = {};
-    for (const lang of normalizedTargets) {
-      singleResults[lang] = await translateToTarget(text, lang);
-    }
-    return singleResults;
-  }
+  const { sourceLang, specialHint } = collectMultiSpecialHint(text);
 
   try {
     const multiResult = await askModelTranslateMulti({
@@ -1302,8 +1348,16 @@ async function translateToTargets(text, targetLangs) {
     });
 
     const cleaned = {};
+    const fixedTerms = getMatchedFixedTerms(text);
+
     for (const lang of normalizedTargets) {
-      cleaned[lang] = cleanupTranslation(multiResult?.[lang] || "");
+      let out = cleanupTranslation(multiResult?.[lang] || "");
+
+      if (lang === "zh-TW" || lang === "zh-CN") {
+        out = cleanupResidualThaiInChinese(out, fixedTerms);
+      }
+
+      cleaned[lang] = out;
     }
 
     return cleaned;
@@ -1325,10 +1379,6 @@ async function translateToTargets(text, targetLangs) {
 
   return results;
 }
-
-/* =========================================================
- * LINE 選單
- * ======================================================= */
 
 function parsePostbackData(data) {
   const params = new URLSearchParams(data);
@@ -1373,8 +1423,21 @@ function buildLanguageMenuFlex() {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "text", text: "群組語言設定", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "只有授權管理人可設定", size: "sm", color: "#666666", align: "center", margin: "sm" },
+              {
+                type: "text",
+                text: "群組語言設定",
+                weight: "bold",
+                size: "lg",
+                align: "center",
+              },
+              {
+                type: "text",
+                text: "只有授權管理人可設定",
+                size: "sm",
+                color: "#666666",
+                align: "center",
+                margin: "sm",
+              },
             ],
           },
           footer: {
@@ -1399,8 +1462,21 @@ function buildLanguageMenuFlex() {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "text", text: "更多語言 1", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "可複選", size: "sm", color: "#666666", align: "center", margin: "sm" },
+              {
+                type: "text",
+                text: "更多語言 1",
+                weight: "bold",
+                size: "lg",
+                align: "center",
+              },
+              {
+                type: "text",
+                text: "可複選",
+                size: "sm",
+                color: "#666666",
+                align: "center",
+                margin: "sm",
+              },
             ],
           },
           footer: {
@@ -1425,8 +1501,21 @@ function buildLanguageMenuFlex() {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "text", text: "更多語言 2", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "營運版擴充", size: "sm", color: "#666666", align: "center", margin: "sm" },
+              {
+                type: "text",
+                text: "更多語言 2",
+                weight: "bold",
+                size: "lg",
+                align: "center",
+              },
+              {
+                type: "text",
+                text: "營運版擴充",
+                size: "sm",
+                color: "#666666",
+                align: "center",
+                margin: "sm",
+              },
             ],
           },
           footer: {
@@ -1451,8 +1540,21 @@ function buildLanguageMenuFlex() {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "text", text: "更多語言 3", weight: "bold", size: "lg", align: "center" },
-              { type: "text", text: "其他常用語言", size: "sm", color: "#666666", align: "center", margin: "sm" },
+              {
+                type: "text",
+                text: "更多語言 3",
+                weight: "bold",
+                size: "lg",
+                align: "center",
+              },
+              {
+                type: "text",
+                text: "其他常用語言",
+                size: "sm",
+                color: "#666666",
+                align: "center",
+                margin: "sm",
+              },
             ],
           },
           footer: {
@@ -1476,6 +1578,126 @@ function buildLanguageMenuFlex() {
   };
 }
 
+function buildStatusText(group, plan) {
+  return [
+    `ownerId：${group?.owner_id || "未綁定"}`,
+    `方案：${getPlanDisplayLabel(plan)}`,
+    `試用類型：${plan?.trial_type || "無"}`,
+    `每日上限：${plan?.daily_limit ?? "不限"}`,
+    `群組上限：${getGroupLimitText(plan)}`,
+    `已綁群組：${(plan?.bound_groups || []).length}`,
+    `目前語言：${group?.langs?.length ? group.langs.join(", ") : "尚未設定"}`,
+    `管理員數量：${group?.admins?.length || 0}`,
+    `到期時間：${plan?.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
+    `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
+  ].join("\n");
+}
+
+function buildPlanText(userId, plan) {
+  if (!plan || !plan.plan_type) {
+    return `使用者：${userId}\n目前尚未開通方案。`;
+  }
+
+  return [
+    `使用者：${userId}`,
+    `方案：${getPlanDisplayLabel(plan)}`,
+    `試用類型：${plan.trial_type || "無"}`,
+    `每日上限：${plan.daily_limit ?? "不限"}`,
+    `群組上限：${getGroupLimitText(plan)}`,
+    `已綁群組：${(plan.bound_groups || []).length}`,
+    `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
+    `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
+  ].join("\n");
+}
+
+function buildUserHelpText() {
+  return [
+    "可用指令：",
+    "/幫助",
+    "/到期時間",
+    "/價格",
+    "/語言",
+    "/我的方案",
+    "/我的ID",
+    "",
+    "說明：",
+    "新加入：每日免費20句",
+    "試用7天：不限群組 / 不限句數",
+    "1群 / 月：500",
+    "不限群 / 月：1500",
+    `續費請聯絡 LINE：${CONTACT_LINE_ID}`,
+  ].join("\n");
+}
+
+function buildAdminHelpText(superAdmin) {
+  const lines = [
+    "管理版指令：",
+    "/幫助",
+    "/狀態",
+    "/語言",
+    "/我的方案",
+    "/到期時間",
+    "/價格",
+    "/我的ID",
+    "/語言選單",
+    "/重設語言",
+  ];
+
+  if (superAdmin) {
+    lines.push(
+      "/綁定",
+      "/解除綁定",
+      "/新增管理員 使用者ID",
+      "/刪除管理員 使用者ID",
+      "/設定擁有者 使用者ID",
+      "/開通1群 使用者ID",
+      "/開通不限30 使用者ID",
+      "/試用7天 使用者ID",
+      "/查方案 使用者ID",
+      "/清空綁群 使用者ID",
+      "/停用 使用者ID",
+      "/全部會員 [頁數]",
+      "/會員列表 [頁數]",
+      "/同步全部會員"
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function buildAllPlansText(plans = [], page = 1, totalPages = 1, totalCount = 0) {
+  if (!plans.length) {
+    return "目前沒有任何會員資料。";
+  }
+
+  const lines = [`會員列表（第 ${page}/${totalPages} 頁，共 ${totalCount} 筆）：`, ""];
+
+  for (const plan of plans) {
+    const boundCount = Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0;
+    const vipStatus = isPlanActive(plan) ? "有效" : "已到期 / 未開通";
+
+    lines.push(
+      [
+        `使用者：${plan.user_id}`,
+        `方案：${getPlanDisplayLabel(plan)}`,
+        `試用類型：${plan.trial_type || "無"}`,
+        `每日上限：${plan.daily_limit ?? "不限"}`,
+        `群組上限：${getGroupLimitText(plan)}`,
+        `已綁群組：${boundCount}`,
+        `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
+        `VIP狀態：${vipStatus}`,
+        "--------------------",
+      ].join("\n")
+    );
+  }
+
+  if (page < totalPages) {
+    lines.push(`下一頁請輸入：/全部會員 ${page + 1}`);
+  }
+
+  return lines.join("\n");
+}
+
 async function replyText(replyToken, text) {
   return lineClient.replyMessage(replyToken, {
     type: "text",
@@ -1494,10 +1716,6 @@ async function pushLanguageMenu(to) {
   ]);
 }
 
-/* =========================================================
- * DB
- * ======================================================= */
-
 async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS plans (
@@ -1510,8 +1728,15 @@ async function initDb() {
     );
   `);
 
-  await pool.query(`ALTER TABLE plans ADD COLUMN IF NOT EXISTS daily_limit INTEGER;`);
-  await pool.query(`ALTER TABLE plans ADD COLUMN IF NOT EXISTS trial_type TEXT;`);
+  await pool.query(`
+    ALTER TABLE plans
+      ADD COLUMN IF NOT EXISTS daily_limit INTEGER;
+  `);
+
+  await pool.query(`
+    ALTER TABLE plans
+      ADD COLUMN IF NOT EXISTS trial_type TEXT;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS group_subscriptions (
@@ -1569,6 +1794,7 @@ async function getGroup(chatId) {
      WHERE chat_id = $1`,
     [chatId]
   );
+
   return result.rows[0] || null;
 }
 
@@ -1615,7 +1841,6 @@ async function saveGroup(group) {
 }
 
 async function getPlan(userId) {
-  if (!userId) return null;
   const result = await pool.query(
     `SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups, created_at, daily_limit, trial_type
      FROM plans
@@ -1660,7 +1885,9 @@ async function savePlan(plan) {
       plan.plan_type,
       plan.group_limit,
       plan.vip_expires_at,
-      JSON.stringify(Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []),
+      JSON.stringify(
+        Array.isArray(plan.bound_groups) ? [...new Set(plan.bound_groups)] : []
+      ),
       plan.daily_limit ?? null,
       plan.trial_type ?? null,
     ]
@@ -1835,7 +2062,9 @@ async function syncMemberToGoogleSheet({
         plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
           ? "不限"
           : String(plan.group_limit ?? "1"),
-      boundGroupCount: Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0,
+      boundGroupCount: Array.isArray(plan.bound_groups)
+        ? plan.bound_groups.length
+        : 0,
       openedAt: openedAt || getNowTaipeiString(),
       expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
       vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
@@ -1844,152 +2073,19 @@ async function syncMemberToGoogleSheet({
 
     const resp = await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(payload),
     });
 
-    if (!resp.ok) throw new Error(`Google Sheets webhook failed: ${resp.status}`);
+    if (!resp.ok) {
+      throw new Error(`Google Sheets webhook failed: ${resp.status}`);
+    }
   } catch (err) {
     console.error("syncMemberToGoogleSheet error =", err);
     if (err?.stack) console.error(err.stack);
   }
-}
-
-/* =========================================================
- * 方案
- * ======================================================= */
-
-function getPlanTypeLabel(planType, groupLimit = null) {
-  switch (planType) {
-    case "free_trial":
-      return "免費試用";
-    case "trial_7days":
-      return "7天試用";
-    case "limited_groups":
-      return groupLimit ? `${groupLimit}群方案` : "限制群組方案";
-    case "unlimited_groups":
-      return "不限群組方案";
-    default:
-      return planType || "未開通";
-  }
-}
-
-function getPlanDisplayLabel(plan) {
-  if (!plan) return "未開通";
-  return getPlanTypeLabel(plan.plan_type, plan.group_limit);
-}
-
-function isPlanActive(plan) {
-  if (!plan) return false;
-  if (plan.plan_type === "free_trial") return true;
-  if (!plan.vip_expires_at) return false;
-  return new Date(plan.vip_expires_at).getTime() > Date.now();
-}
-
-function canUseGroup(plan, groupId) {
-  if (!plan) return false;
-
-  if (plan.plan_type === "trial_7days") return true;
-
-  if (plan.plan_type === "free_trial") {
-    const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
-    if (groups.includes(groupId)) return true;
-    return groups.length < 1;
-  }
-
-  if (plan.plan_type === "unlimited_groups") return true;
-
-  if (plan.plan_type === "limited_groups") {
-    const groups = Array.isArray(plan.bound_groups) ? plan.bound_groups : [];
-    const limit = Number(plan.group_limit || 0);
-    if (groups.includes(groupId)) return true;
-    return groups.length < limit;
-  }
-
-  return false;
-}
-
-function getGroupLimitText(plan) {
-  if (!plan) return "未設定";
-  if (plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days") {
-    return "不限";
-  }
-  return String(plan.group_limit ?? "1");
-}
-
-function createPaidPlanObject(
-  userId,
-  planType,
-  groupLimit,
-  days,
-  oldPlan = null,
-  options = {}
-) {
-  const { resetBoundGroups = false } = options;
-
-  return {
-    user_id: userId,
-    plan_type: planType,
-    group_limit: groupLimit,
-    vip_expires_at: addDays(days),
-    bound_groups: resetBoundGroups
-      ? []
-      : Array.isArray(oldPlan?.bound_groups)
-      ? [...new Set(oldPlan.bound_groups)]
-      : [],
-    daily_limit: null,
-    trial_type: null,
-  };
-}
-
-function createFreeTrialPlanObject(userId, oldPlan = null) {
-  return {
-    user_id: userId,
-    plan_type: "free_trial",
-    group_limit: 1,
-    vip_expires_at: null,
-    bound_groups: Array.isArray(oldPlan?.bound_groups)
-      ? [...new Set(oldPlan.bound_groups)].slice(0, 1)
-      : [],
-    daily_limit: 20,
-    trial_type: "每日免費20句",
-  };
-}
-
-function create7DayTrialPlanObject(userId, oldPlan = null) {
-  return {
-    user_id: userId,
-    plan_type: "trial_7days",
-    group_limit: null,
-    vip_expires_at: addDays(7),
-    bound_groups: Array.isArray(oldPlan?.bound_groups)
-      ? [...new Set(oldPlan.bound_groups)]
-      : [],
-    daily_limit: null,
-    trial_type: "7天試用不限群組不限句數",
-  };
-}
-
-function disablePlanObject(plan, userId) {
-  return {
-    user_id: userId,
-    plan_type: plan?.plan_type || null,
-    group_limit: plan?.group_limit ?? null,
-    vip_expires_at: new Date(Date.now() - 1000).toISOString(),
-    bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
-    daily_limit: plan?.daily_limit ?? null,
-    trial_type: plan?.trial_type ?? null,
-  };
-}
-
-function bindGroupToOwner(plan, groupId) {
-  if (!plan.bound_groups) plan.bound_groups = [];
-  if (!plan.bound_groups.includes(groupId)) plan.bound_groups.push(groupId);
-}
-
-function unbindGroupFromOwner(plan, groupId) {
-  if (!plan?.bound_groups) return;
-  plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
 }
 
 async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
@@ -2084,11 +2180,93 @@ function canLanguageManage(group, plan, userId) {
 function addAdmin(group, userId) {
   if (!userId) return;
   if (!Array.isArray(group.admins)) group.admins = [];
-  if (!group.admins.includes(userId)) group.admins.push(userId);
+  if (!group.admins.includes(userId)) {
+    group.admins.push(userId);
+  }
 }
 
 function removeAdmin(group, userId) {
   group.admins = (group.admins || []).filter((id) => id !== userId);
+}
+
+function bindGroupToOwner(plan, groupId) {
+  if (!plan.bound_groups) {
+    plan.bound_groups = [];
+  }
+
+  if (!plan.bound_groups.includes(groupId)) {
+    plan.bound_groups.push(groupId);
+  }
+}
+
+function unbindGroupFromOwner(plan, groupId) {
+  if (!plan?.bound_groups) return;
+  plan.bound_groups = plan.bound_groups.filter((g) => g !== groupId);
+}
+
+function createPaidPlanObject(
+  userId,
+  planType,
+  groupLimit,
+  days,
+  oldPlan = null,
+  options = {}
+) {
+  const { resetBoundGroups = false } = options;
+
+  return {
+    user_id: userId,
+    plan_type: planType,
+    group_limit: groupLimit,
+    vip_expires_at: addDays(days),
+    bound_groups: resetBoundGroups
+      ? []
+      : Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
+    daily_limit: null,
+    trial_type: null,
+  };
+}
+
+function createFreeTrialPlanObject(userId, oldPlan = null) {
+  return {
+    user_id: userId,
+    plan_type: "free_trial",
+    group_limit: 1,
+    vip_expires_at: null,
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)].slice(0, 1)
+      : [],
+    daily_limit: 20,
+    trial_type: "每日免費20句",
+  };
+}
+
+function create7DayTrialPlanObject(userId, oldPlan = null) {
+  return {
+    user_id: userId,
+    plan_type: "trial_7days",
+    group_limit: null,
+    vip_expires_at: addDays(7),
+    bound_groups: Array.isArray(oldPlan?.bound_groups)
+      ? [...new Set(oldPlan.bound_groups)]
+      : [],
+    daily_limit: null,
+    trial_type: "7天試用不限群組不限句數",
+  };
+}
+
+function disablePlanObject(plan, userId) {
+  return {
+    user_id: userId,
+    plan_type: plan?.plan_type || null,
+    group_limit: plan?.group_limit ?? null,
+    vip_expires_at: new Date(Date.now() - 1000).toISOString(),
+    bound_groups: Array.isArray(plan?.bound_groups) ? plan.bound_groups : [],
+    daily_limit: plan?.daily_limit ?? null,
+    trial_type: plan?.trial_type ?? null,
+  };
 }
 
 async function releaseGroupBinding(chatId, { deleteGroupRow = false } = {}) {
@@ -2115,152 +2293,6 @@ async function releaseGroupBinding(chatId, { deleteGroupRow = false } = {}) {
   group.langs = [];
   await saveGroup(group);
 }
-
-async function clearAllBindingsByUserId(userId) {
-  if (!userId) return { clearedGroups: 0 };
-
-  await pool.query(
-    `UPDATE plans SET bound_groups = '[]'::jsonb WHERE user_id = $1`,
-    [userId]
-  );
-
-  const result = await pool.query(
-    `
-    UPDATE group_subscriptions
-    SET owner_id = NULL,
-        admins = '[]'::jsonb,
-        langs = '[]'::jsonb,
-        tone_mode = 'normal'
-    WHERE owner_id = $1
-    `,
-    [userId]
-  );
-
-  return { clearedGroups: result.rowCount || 0 };
-}
-
-/* =========================================================
- * 文字回覆
- * ======================================================= */
-
-function buildStatusText(group, plan) {
-  return [
-    `ownerId：${group?.owner_id || "未綁定"}`,
-    `方案：${getPlanDisplayLabel(plan)}`,
-    `試用類型：${plan?.trial_type || "無"}`,
-    `每日上限：${plan?.daily_limit ?? "不限"}`,
-    `群組上限：${getGroupLimitText(plan)}`,
-    `已綁群組：${(plan?.bound_groups || []).length}`,
-    `目前語言：${group?.langs?.length ? group.langs.join(", ") : "尚未設定"}`,
-    `管理員數量：${group?.admins?.length || 0}`,
-    `到期時間：${plan?.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
-    `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
-  ].join("\n");
-}
-
-function buildPlanText(userId, plan) {
-  if (!plan || !plan.plan_type) {
-    return `使用者：${userId}\n目前尚未開通方案。`;
-  }
-
-  return [
-    `使用者：${userId}`,
-    `方案：${getPlanDisplayLabel(plan)}`,
-    `試用類型：${plan.trial_type || "無"}`,
-    `每日上限：${plan.daily_limit ?? "不限"}`,
-    `群組上限：${getGroupLimitText(plan)}`,
-    `已綁群組：${(plan.bound_groups || []).length}`,
-    `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
-    `VIP狀態：${isPlanActive(plan) ? "有效" : "已到期 / 未開通"}`,
-  ].join("\n");
-}
-
-function buildUserHelpText() {
-  return [
-    "可用指令：",
-    "/幫助",
-    "/到期時間",
-    "/價格",
-    "/語言",
-    "/我的方案",
-    "/我的ID",
-    "",
-    "說明：",
-    "新加入：每日免費20句",
-    "試用7天：不限群組 / 不限句數",
-    "1群 / 月：500",
-    "不限群 / 月：1500",
-    `續費請聯絡 LINE：${CONTACT_LINE_ID}`,
-  ].join("\n");
-}
-
-function buildAdminHelpText(superAdmin) {
-  const lines = [
-    "管理版指令：",
-    "/幫助",
-    "/狀態",
-    "/語言",
-    "/我的方案",
-    "/到期時間",
-    "/價格",
-    "/我的ID",
-    "/語言選單",
-    "/重設語言",
-  ];
-
-  if (superAdmin) {
-    lines.push(
-      "/綁定",
-      "/解除綁定",
-      "/新增管理員 使用者ID",
-      "/刪除管理員 使用者ID",
-      "/設定擁有者 使用者ID",
-      "/開通1群 使用者ID",
-      "/開通不限30 使用者ID",
-      "/試用7天 使用者ID",
-      "/查方案 使用者ID",
-      "/清空綁群 使用者ID",
-      "/停用 使用者ID",
-      "/全部會員 [頁數]",
-      "/會員列表 [頁數]",
-      "/同步全部會員"
-    );
-  }
-
-  return lines.join("\n");
-}
-
-function buildAllPlansText(plans = [], page = 1, totalPages = 1, totalCount = 0) {
-  if (!plans.length) return "目前沒有任何會員資料。";
-
-  const lines = [`會員列表（第 ${page}/${totalPages} 頁，共 ${totalCount} 筆）：`, ""];
-
-  for (const plan of plans) {
-    const boundCount = Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0;
-    const vipStatus = isPlanActive(plan) ? "有效" : "已到期 / 未開通";
-
-    lines.push(
-      [
-        `使用者：${plan.user_id}`,
-        `方案：${getPlanDisplayLabel(plan)}`,
-        `試用類型：${plan.trial_type || "無"}`,
-        `每日上限：${plan.daily_limit ?? "不限"}`,
-        `群組上限：${getGroupLimitText(plan)}`,
-        `已綁群組：${boundCount}`,
-        `到期時間：${plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "未設定"}`,
-        `VIP狀態：${vipStatus}`,
-        "--------------------",
-      ].join("\n")
-    );
-  }
-
-  if (page < totalPages) lines.push(`下一頁請輸入：/全部會員 ${page + 1}`);
-  return lines.join("\n");
-}
-
-/* =========================================================
- * LINE 事件
- * ======================================================= */
 
 async function handleMemberLeft(event) {
   const chatId = getChatId(event);
@@ -2294,12 +2326,43 @@ async function handleMemberLeft(event) {
     }
   }
 
-  if (changed) await saveGroup(group);
+  if (changed) {
+    await saveGroup(group);
+  }
 }
 
 async function handleLeave(event) {
   const chatId = getChatId(event);
   await releaseGroupBinding(chatId, { deleteGroupRow: true });
+}
+
+async function clearAllBindingsByUserId(userId) {
+  if (!userId) return { clearedGroups: 0 };
+
+  await pool.query(
+    `
+    UPDATE plans
+    SET bound_groups = '[]'::jsonb
+    WHERE user_id = $1
+    `,
+    [userId]
+  );
+
+  const result = await pool.query(
+    `
+    UPDATE group_subscriptions
+    SET owner_id = NULL,
+        admins = '[]'::jsonb,
+        langs = '[]'::jsonb,
+        tone_mode = 'normal'
+    WHERE owner_id = $1
+    `,
+    [userId]
+  );
+
+  return {
+    clearedGroups: result.rowCount || 0,
+  };
 }
 
 async function handleJoin(event) {
@@ -2314,7 +2377,9 @@ async function handleFollow(event) {
 
   const group = await ensureGroupDb(chatId);
 
-  if (!group.owner_id) group.owner_id = userId;
+  if (!group.owner_id) {
+    group.owner_id = userId;
+  }
   addAdmin(group, userId);
   await saveGroup(group);
 
@@ -2381,12 +2446,17 @@ async function handlePostback(event) {
   const ownerPlan = await getPlan(group.owner_id);
 
   if (!isSuperAdmin(userId) && !canLanguageManage(group, ownerPlan, userId)) {
-    await replyText(event.replyToken, "只有此群的授權管理人可以設定語言，或方案可能已到期。");
+    await replyText(
+      event.replyToken,
+      "只有此群的授權管理人可以設定語言，或方案可能已到期。"
+    );
     return;
   }
 
   if (action === "add_lang") {
-    if (!group.langs.includes(lang)) group.langs.push(lang);
+    if (!group.langs.includes(lang)) {
+      group.langs.push(lang);
+    }
     group.langs = normalizeLangList(group.langs);
     await saveGroup(group);
     await replyText(
@@ -2424,8 +2494,12 @@ async function handleCommand(event, rawText) {
   const group = await ensureGroupDb(chatId);
 
   if (chatType === "user") {
-    if (!group.owner_id && userId) group.owner_id = userId;
-    if ((group.admins || []).length === 0 && userId) addAdmin(group, userId);
+    if (!group.owner_id && userId) {
+      group.owner_id = userId;
+    }
+    if ((group.admins || []).length === 0 && userId) {
+      addAdmin(group, userId);
+    }
     await saveGroup(group);
   }
 
@@ -2441,7 +2515,11 @@ async function handleCommand(event, rawText) {
   const superAdmin = isSuperAdmin(userId);
 
   if (cmd === "/help" || cmd === "/幫助") {
-    await replyText(event.replyToken, admin || superAdmin ? buildAdminHelpText(superAdmin) : buildUserHelpText());
+    if (admin || superAdmin) {
+      await replyText(event.replyToken, buildAdminHelpText(superAdmin));
+    } else {
+      await replyText(event.replyToken, buildUserHelpText());
+    }
     return true;
   }
 
@@ -2500,13 +2578,19 @@ async function handleCommand(event, rawText) {
     if (!group.owner_id && chatType !== "user") {
       await replyMessages(event.replyToken, [
         buildLanguageMenuFlex(),
-        { type: "text", text: "本群尚未設定管理人。請直接按語言，第一個成功設定的人會成為此群管理人。" },
+        {
+          type: "text",
+          text: "本群尚未設定管理人。請直接按語言，第一個成功設定的人會成為此群管理人。",
+        },
       ]);
       return true;
     }
 
     if (!superAdmin && !canLanguageManage(group, plan, userId)) {
-      await replyText(event.replyToken, "你目前不能設定語言，可能是權限不足或方案已到期。");
+      await replyText(
+        event.replyToken,
+        "你目前不能設定語言，可能是權限不足或方案已到期。"
+      );
       return true;
     }
 
@@ -2524,7 +2608,10 @@ async function handleCommand(event, rawText) {
     }
 
     if (group.owner_id && !superAdmin && !canLanguageManage(group, plan, userId)) {
-      await replyText(event.replyToken, "你目前不能重設語言，可能是權限不足或方案已到期。");
+      await replyText(
+        event.replyToken,
+        "你目前不能重設語言，可能是權限不足或方案已到期。"
+      );
       return true;
     }
 
@@ -2548,11 +2635,17 @@ async function handleCommand(event, rawText) {
     const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
 
     if (page > result.totalPages && result.total > 0) {
-      await replyText(event.replyToken, `頁數超出範圍，目前只有 ${result.totalPages} 頁。`);
+      await replyText(
+        event.replyToken,
+        `頁數超出範圍，目前只有 ${result.totalPages} 頁。`
+      );
       return true;
     }
 
-    await replyText(event.replyToken, buildAllPlansText(result.rows, result.page, result.totalPages, result.total));
+    await replyText(
+      event.replyToken,
+      buildAllPlansText(result.rows, result.page, result.totalPages, result.total)
+    );
     return true;
   }
 
@@ -2575,7 +2668,10 @@ async function handleCommand(event, rawText) {
       successCount += 1;
     }
 
-    await replyText(event.replyToken, `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`);
+    await replyText(
+      event.replyToken,
+      `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`
+    );
     return true;
   }
 
@@ -2598,14 +2694,20 @@ async function handleCommand(event, rawText) {
     }
 
     if (!canUseGroup(currentPlan, chatId)) {
-      await replyText(event.replyToken, "此方案的群組數量已滿，無法再綁定新群。");
+      await replyText(
+        event.replyToken,
+        "此方案的群組數量已滿，無法再綁定新群。"
+      );
       return true;
     }
 
     bindGroupToOwner(currentPlan, chatId);
     await savePlan(currentPlan);
 
-    await replyText(event.replyToken, `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`);
+    await replyText(
+      event.replyToken,
+      `綁定成功。\n目前已綁群組數：${currentPlan.bound_groups.length}`
+    );
     return true;
   }
 
@@ -2621,6 +2723,7 @@ async function handleCommand(event, rawText) {
     }
 
     await releaseGroupBinding(chatId);
+
     await replyText(event.replyToken, "本群已解除綁定，並清除群組綁定資料。");
     return true;
   }
@@ -2701,12 +2804,21 @@ async function handleCommand(event, rawText) {
     }
 
     const oldPlan = await getPlan(arg);
-    const nextPlan = createPaidPlanObject(arg, "limited_groups", 1, 30, oldPlan, {
-      resetBoundGroups: true,
-    });
+    const nextPlan = createPaidPlanObject(
+      arg,
+      "limited_groups",
+      1,
+      30,
+      oldPlan,
+      { resetBoundGroups: true }
+    );
 
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: arg, event, openedAt: getNowTaipeiString() });
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      event,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -2722,20 +2834,42 @@ async function handleCommand(event, rawText) {
     }
 
     if (!ownerId && !arg) {
-      await replyText(event.replyToken, "本群尚未設定 owner，或用法：/開通不限30 使用者ID");
+      await replyText(
+        event.replyToken,
+        "本群尚未設定 owner，或用法：/開通不限30 使用者ID"
+      );
       return true;
     }
 
-    const targetUserId = arg || ownerId;
-    const oldPlan = await getPlan(targetUserId);
-    const nextPlan = createPaidPlanObject(targetUserId, "unlimited_groups", null, 30, oldPlan);
+    if (arg) {
+      const oldPlan = await getPlan(arg);
+      const nextPlan = createPaidPlanObject(arg, "unlimited_groups", null, 30, oldPlan);
+      await savePlan(nextPlan);
+      await syncMemberToGoogleSheet({
+        userId: arg,
+        event,
+        openedAt: getNowTaipeiString(),
+      });
 
+      await replyText(
+        event.replyToken,
+        `已開通 不限群組 / 30天\n使用者：${arg}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      );
+      return true;
+    }
+
+    const oldPlan = await getPlan(ownerId);
+    const nextPlan = createPaidPlanObject(ownerId, "unlimited_groups", null, 30, oldPlan);
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: targetUserId, event, openedAt: getNowTaipeiString() });
+    await syncMemberToGoogleSheet({
+      userId: ownerId,
+      event,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
-      `已開通 不限群組 / 30天\n使用者：${targetUserId}\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
+      `已開通 30 天不限群組\n到期：${formatDateTime(nextPlan.vip_expires_at)}`
     );
     return true;
   }
@@ -2754,7 +2888,11 @@ async function handleCommand(event, rawText) {
     const oldPlan = await getPlan(arg);
     const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: arg, event, openedAt: getNowTaipeiString() });
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      event,
+      openedAt: getNowTaipeiString(),
+    });
 
     await replyText(
       event.replyToken,
@@ -2791,7 +2929,11 @@ async function handleCommand(event, rawText) {
     }
 
     const result = await clearAllBindingsByUserId(arg);
-    await replyText(event.replyToken, `已清空使用者綁群資料\n使用者：${arg}\n清除群數：${result.clearedGroups}`);
+
+    await replyText(
+      event.replyToken,
+      `已清空使用者綁群資料\n使用者：${arg}\n清除群數：${result.clearedGroups}`
+    );
     return true;
   }
 
@@ -2884,7 +3026,11 @@ async function handleTextMessage(event) {
     }
 
     if (actingPlan.daily_limit) {
-      const limitResult = await checkDailyLimit(limitUserId, chatId, actingPlan.daily_limit);
+      const limitResult = await checkDailyLimit(
+        limitUserId,
+        chatId,
+        actingPlan.daily_limit
+      );
 
       if (!limitResult.allowed) {
         await replyText(
@@ -2917,6 +3063,7 @@ async function handleTextMessage(event) {
       }
 
       let translatedMap = {};
+
       try {
         translatedMap = await translateToTargets(text, targetLangs);
       } catch (err) {
@@ -2925,11 +3072,13 @@ async function handleTextMessage(event) {
         translatedMap = {};
       }
 
-      const outputs = dedupeTranslatedOutputs(
-        targetLangs
-          .map((lang) => safeTranslatedLine(lang, translatedMap?.[lang] || ""))
-          .filter(Boolean)
-      );
+      const results = targetLangs.map((lang) => {
+        const translated = translatedMap?.[lang] || "";
+        if (!translated) return null;
+        return safeTranslatedLine(lang, translated);
+      });
+
+      const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
 
       if (!outputs.length) {
         try {
@@ -2942,7 +3091,10 @@ async function handleTextMessage(event) {
 
           const fallbackText = await translateToTarget(text, fallbackLang);
           if (fallbackText) {
-            await replyText(event.replyToken, safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯");
+            await replyText(
+              event.replyToken,
+              safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯"
+            );
             return;
           }
         } catch (err) {
@@ -2967,7 +3119,9 @@ async function handleTextMessage(event) {
     const sourceLang = detectSourceLangSimple(text);
     const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
 
-    if (!langsToTranslate.length) return;
+    if (!langsToTranslate.length) {
+      return;
+    }
 
     let translatedMap = {};
 
@@ -2982,7 +3136,10 @@ async function handleTextMessage(event) {
         if (fallbackLang) {
           const fallbackText = await translateToTarget(text, fallbackLang);
           if (fallbackText) {
-            await replyText(event.replyToken, safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯");
+            await replyText(
+              event.replyToken,
+              safeTranslatedLine(fallbackLang, fallbackText) || "暫時無法翻譯"
+            );
             return;
           }
         }
@@ -2995,13 +3152,16 @@ async function handleTextMessage(event) {
       return;
     }
 
-    const outputs = dedupeTranslatedOutputs(
-      langsToTranslate
-        .map((lang) => safeTranslatedLine(lang, translatedMap?.[lang] || ""))
-        .filter(Boolean)
-    );
+    const results = langsToTranslate.map((lang) => {
+      const translated = translatedMap?.[lang] || "";
+      return safeTranslatedLine(lang, translated);
+    });
 
-    if (!outputs.length) return;
+    const outputs = dedupeTranslatedOutputs(results.filter(Boolean));
+
+    if (!outputs.length) {
+      return;
+    }
 
     await replyText(event.replyToken, outputs.join("\n\n"));
   } finally {
@@ -3064,13 +3224,13 @@ async function handleEvent(event) {
       }
     }
   } finally {
-    logTiming("handleEvent", startedAt, `type=${eventType} chatId=${chatId} userId=${userId}`);
+    logTiming(
+      "handleEvent",
+      startedAt,
+      `type=${eventType} chatId=${chatId} userId=${userId}`
+    );
   }
 }
-
-/* =========================================================
- * HTTP
- * ======================================================= */
 
 app.get("/", (_req, res) => {
   res.status(200).send("LINE translator bot is running.");
@@ -3079,15 +3239,20 @@ app.get("/", (_req, res) => {
 app.get("/health", async (_req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
-    res.status(200).json({ ok: true, time: result.rows?.[0]?.now || null });
+    res.status(200).json({
+      ok: true,
+      time: result.rows?.[0]?.now || null,
+    });
   } catch (err) {
     console.error("/health error =", err);
-    res.status(500).json({ ok: false, error: String(err?.message || err) });
+    res.status(500).json({
+      ok: false,
+      error: String(err?.message || err),
+    });
   }
 });
 
 app.post("/webhook", middleware(lineConfig), (req, res) => {
-  // 先回 200，避免 LINE 等翻譯等太久而重送 webhook
   res.sendStatus(200);
 
   const startedAt = Date.now();
@@ -3134,7 +3299,6 @@ initDb()
       console.log(
         `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
       );
-      console.log(`Cache version=${CACHE_VERSION}`);
     });
   })
   .catch((err) => {
