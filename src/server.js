@@ -48,7 +48,7 @@ const WEBHOOK_EVENT_CONCURRENCY = Math.max(
 
 const MAX_TRANSLATION_RETRIES = Math.max(
   0,
-  Number(process.env.MAX_TRANSLATION_RETRIES || 1)
+  Number(process.env.MAX_TRANSLATION_RETRIES || 2)
 );
 
 const LOG_TIMING = process.env.LOG_TIMING !== "0";
@@ -71,7 +71,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 const MEMBER_LIST_PAGE_SIZE = 10;
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9-mixfix";
 
 const FIXED_TERM_MAP = {
   เหิงซุน: "เหิงซุน",
@@ -640,7 +640,10 @@ function buildStableInstructions({ targetLang, specialHint = "" }) {
 7. 聊天句要自然，但不可擴寫
 8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ
 9. 若目標語言是泰文，不可混入中文
-10. 若原文有口語、誤拼、方言，只能做合理語意修正，不可自行編故事
+10. 若目標語言是英文，不可混入中文或泰文
+11. 普通句子、口語、威脅語、髒話、短句都必須完整翻譯，不可以保留原文
+12. 只有人名、地名、品牌、LINE ID、數字、代號可以保留原樣
+13. 若原文有口語、誤拼、方言，只能做合理語意修正，不可自行編故事
 
 補充提示：
 ${specialHint || "無"}
@@ -668,10 +671,19 @@ function buildMultiStableInstructions({ targetLangs, specialHint = "" }) {
 3. 不可加前綴、引號外說明、註解
 4. 忠實保留原意，不增加、不刪減
 5. 聊天句自然，但不可擴寫
-6. 翻成中文時，不可殘留泰文語氣詞
-7. 翻成泰文時，不可混入中文
-8. 若有固定術語，必須遵守
-9. 若有口語、短句、誤拼，依聊天語境自然翻譯
+6. 翻成中文時，不可殘留泰文、泰文語氣詞或泰文字
+7. 翻成泰文時，value 裡面不可出現任何中文漢字
+8. 翻成英文時，value 裡面不可出現中文或泰文
+9. 普通句子、口語、威脅語、髒話、短句都必須完整翻譯，不可以保留原文
+10. 只有人名、地名、品牌、LINE ID、數字、代號可以保留原樣
+11. 若有固定術語，必須遵守
+12. 若有口語、短句、誤拼，依聊天語境自然翻譯
+13. 如果某個 value 還夾雜來源語言，必須自己重新翻成該目標語言後再輸出 JSON
+
+特別注意：
+- 目標是 th 時，輸出必須是純泰文，不可含「一個」「打一個」「來」這類中文。
+- 例如中文「來一個打一個」必須翻成泰文意思，不可以照抄中文。
+- 目標是 zh-TW / zh-CN 時，輸出必須是純中文，不可含 คะ / ค่ะ / ครับ。
 
 補充提示：
 ${specialHint || "無"}
@@ -1338,6 +1350,113 @@ async function translateToTargets(text, targetLangs) {
   if (!normalizedTargets.length) return {};
 
   const { sourceLang, specialHint } = collectMultiSpecialHint(text);
+  const fixedTerms = getMatchedFixedTerms(text);
+
+  const repairOne = async (lang, value) => {
+    let out = cleanupTranslation(value || "");
+
+    if (lang === "zh-TW" || lang === "zh-CN") {
+      out = cleanupResidualThaiInChinese(out, fixedTerms);
+    }
+
+    const allowWholeOriginalText = fixedTerms.some(
+      (item) => item.target === item.src && isSameText(text, item.src)
+    );
+
+    const sameAsInput =
+      !!out &&
+      sourceLang !== lang &&
+      !allowWholeOriginalText &&
+      isSameText(out, text);
+
+    const wrongScript = hasWrongScriptForTarget(out, lang, fixedTerms);
+
+    if (!out || sameAsInput || wrongScript) {
+      console.warn(
+        `[multi-translation-repair] lang=${lang} empty=${!out} sameAsInput=${sameAsInput} wrongScript=${wrongScript}`
+      );
+
+      try {
+        out = await translateToTarget(text, lang);
+      } catch (err) {
+        console.error(`[multi-translation-repair failed] lang=${lang}`, err);
+        if (err?.stack) console.error(err.stack);
+        out = "";
+      }
+
+      if (lang === "zh-TW" || lang === "zh-CN") {
+        out = cleanupResidualThaiInChinese(out, fixedTerms);
+      }
+    }
+
+    if (hasWrongScriptForTarget(out, lang, fixedTerms)) {
+      console.warn(`[multi-translation-emergency-repair] lang=${lang}`);
+
+      try {
+        if (lang === "th") {
+          out = await askModelTranslate({
+            text,
+            targetLang: lang,
+            sourceHint: sourceLang,
+            specialHint: `
+強制修正：
+請把原文完整翻成純泰文。
+不可出現任何中文漢字。
+普通中文句子、口語、威脅語、短句都必須翻成泰文。
+像「來一個打一個」這種中文口語，必須翻成泰文意思，不可以照抄中文。
+只輸出泰文翻譯結果。
+${specialHint || ""}
+            `.trim(),
+          });
+        } else if (lang === "zh-TW" || lang === "zh-CN") {
+          out = await askModelTranslate({
+            text,
+            targetLang: lang,
+            sourceHint: sourceLang,
+            specialHint: `
+強制修正：
+請把原文完整翻成純中文。
+不可出現任何泰文字。
+泰文語氣詞 คะ / ค่ะ / ครับ 也必須翻成中文語氣。
+只輸出中文翻譯結果。
+${specialHint || ""}
+            `.trim(),
+          });
+
+          out = cleanupResidualThaiInChinese(out, fixedTerms);
+        } else if (lang === "en") {
+          out = await askModelTranslate({
+            text,
+            targetLang: lang,
+            sourceHint: sourceLang,
+            specialHint: `
+強制修正：
+請把原文完整翻成純英文。
+不可出現中文或泰文。
+只輸出英文翻譯結果。
+${specialHint || ""}
+            `.trim(),
+          });
+        }
+      } catch (err) {
+        console.error(`[multi-translation-emergency-repair failed] lang=${lang}`, err);
+        if (err?.stack) console.error(err.stack);
+      }
+    }
+
+    out = cleanupTranslation(out);
+
+    if (lang === "zh-TW" || lang === "zh-CN") {
+      out = cleanupResidualThaiInChinese(out, fixedTerms);
+    }
+
+    if (hasWrongScriptForTarget(out, lang, fixedTerms)) {
+      console.warn(`[multi-translation-drop-bad-output] lang=${lang} output=${out}`);
+      return "";
+    }
+
+    return out;
+  };
 
   try {
     const multiResult = await askModelTranslateMulti({
@@ -1348,16 +1467,9 @@ async function translateToTargets(text, targetLangs) {
     });
 
     const cleaned = {};
-    const fixedTerms = getMatchedFixedTerms(text);
 
     for (const lang of normalizedTargets) {
-      let out = cleanupTranslation(multiResult?.[lang] || "");
-
-      if (lang === "zh-TW" || lang === "zh-CN") {
-        out = cleanupResidualThaiInChinese(out, fixedTerms);
-      }
-
-      cleaned[lang] = out;
+      cleaned[lang] = await repairOne(lang, multiResult?.[lang] || "");
     }
 
     return cleaned;
@@ -1367,9 +1479,11 @@ async function translateToTargets(text, targetLangs) {
   }
 
   const results = {};
+
   for (const lang of normalizedTargets) {
     try {
-      results[lang] = await translateToTarget(text, lang);
+      const single = await translateToTarget(text, lang);
+      results[lang] = await repairOne(lang, single);
     } catch (err) {
       console.error(`translateToTarget failed: ${lang}`, err);
       if (err?.stack) console.error(err.stack);
