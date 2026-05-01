@@ -1726,7 +1726,20 @@ async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
     `,
     [safePageSize, offset]
   );
+async function getAllPlansNoPaging() {
+  const result = await pool.query(`
+    SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups,
+           daily_limit, trial_type, created_at
+    FROM plans
+    ORDER BY
+      CASE WHEN vip_expires_at IS NULL THEN 1 ELSE 0 END,
+      vip_expires_at DESC NULLS LAST,
+      created_at DESC,
+      user_id ASC
+  `);
 
+  return result.rows || [];
+}
   return {
     rows: result.rows || [],
     total,
@@ -1847,6 +1860,7 @@ function buildAdminHelpText(superAdmin) {
       "/停用 使用者ID",
       "/全部會員 [頁數]",
       "/會員列表 [頁數]",
+      "/同步全部會員",
       "/清除翻譯快取"
     );
   }
@@ -2405,7 +2419,37 @@ async function handleCommand(event, rawText) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
+if (cmd === "/同步全部會員") {
+  if (!superAdmin) {
+    await replyText(event.replyToken, "只有最高管理員可以操作。");
+    return true;
+  }
 
+  const allPlans = await getAllPlansNoPaging();
+
+  if (!allPlans.length) {
+    await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
+    return true;
+  }
+
+  let successCount = 0;
+
+  for (const planItem of allPlans) {
+    await syncMemberToGoogleSheet({
+      userId: planItem.user_id,
+      note: "手動同步全部會員",
+    });
+
+    successCount += 1;
+  }
+
+  await replyText(
+    event.replyToken,
+    `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`
+  );
+
+  return true;
+}
     const page = parsePositiveInt(arg, 1);
     const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
 
