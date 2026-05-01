@@ -65,11 +65,11 @@ if (missingVars.length > 0) {
 }
 
 const CONTACT_LINE_ID = "aszx88188";
-const CACHE_VERSION = "v10-mentionfix-stable";
-const MEMBER_LIST_PAGE_SIZE = 10;
-
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
+
+const CACHE_VERSION = "v11-complete-syncfix";
+const MEMBER_LIST_PAGE_SIZE = 10;
 
 const SUPER_ADMINS = [
   "U96da7afef783339acc1959c20b445f9c",
@@ -229,6 +229,13 @@ function addDays(days) {
 function formatDateTime(dateString) {
   if (!dateString) return "未設定";
   return new Date(dateString).toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour12: false,
+  });
+}
+
+function getNowTaipeiString() {
+  return new Date().toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei",
     hour12: false,
   });
@@ -438,13 +445,9 @@ function removeAllowedOriginalTerms(text = "", fixedTerms = []) {
 
 function removeAllowedInlineTokens(text = "") {
   return String(text || "")
-    // 網址
     .replace(/https?:\/\/\S+/gi, "")
-    // email
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "")
-    // LINE ID 類型，例如 LINE ID：kitty52818
     .replace(/\bLINE\s*ID\s*[:：]?\s*[A-Za-z0-9._-]+\b/gi, "")
-    // LINE @標記，例如 @奶茶小站、@Milk520、@ร้านชา
     .replace(/@[^\s\n\r\t，。！？,.!?;；:：()（）\[\]【】{}<>]+/g, "");
 }
 
@@ -621,8 +624,8 @@ function buildStableInstructions({ targetLang, specialHint = "" }) {
 6. 要保留原句強度、語氣、簡短程度
 7. 聊天句要自然，但不可擴寫
 8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ
-9. 若目標語言是泰文，不可混入中文
-10. 若目標語言是英文，不可混入中文或泰文
+9. 若目標語言是泰文，不可混入中文；但 LINE @標記、網址、email、LINE ID 可以原樣保留
+10. 若目標語言是英文，不可混入中文或泰文；但 LINE @標記、網址、email、LINE ID 可以原樣保留
 11. 普通句子、口語、威脅語、髒話、短句都必須完整翻譯，不可以保留原文
 12. 只有人名、地名、品牌、LINE ID、LINE @標記、網址、email、數字、代號可以保留原樣
 13. LINE @標記例如「@奶茶小站」必須完整保留，不可翻譯、不可改字、不可刪除
@@ -656,8 +659,8 @@ function buildMultiStableInstructions({ targetLangs, specialHint = "" }) {
 4. 忠實保留原意，不增加、不刪減
 5. 聊天句自然，但不可擴寫
 6. 翻成中文時，不可殘留泰文、泰文語氣詞或泰文字
-7. 翻成泰文時，value 裡面不可出現任何中文漢字，但 LINE @標記可保留
-8. 翻成英文時，value 裡面不可出現中文或泰文，但 LINE @標記可保留
+7. 翻成泰文時，value 裡面不可出現任何中文漢字；但 LINE @標記、網址、email、LINE ID 可以原樣保留
+8. 翻成英文時，value 裡面不可出現中文或泰文；但 LINE @標記、網址、email、LINE ID 可以原樣保留
 9. 普通句子、口語、威脅語、髒話、短句都必須完整翻譯，不可以保留原文
 10. 只有人名、地名、品牌、LINE ID、LINE @標記、網址、email、數字、代號可以保留原樣
 11. LINE @標記例如「@奶茶小站」必須完整保留，不可翻譯、不可改字、不可刪除
@@ -695,6 +698,27 @@ function buildCacheKey({ text, targetLang, sourceHint = "auto", specialHint = ""
     .digest("hex");
 }
 
+function buildMultiTargetCacheKey({
+  text,
+  targetLangs,
+  sourceHint = "auto",
+  specialHint = "",
+}) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        CACHE_VERSION,
+        "multi",
+        String(sourceHint),
+        [...targetLangs].sort().join(","),
+        String(specialHint),
+        String(text),
+      ].join("__")
+    )
+    .digest("hex");
+}
+
 async function getTranslationCache({ text, targetLang, sourceHint = "auto", specialHint = "" }) {
   const cacheKey = buildCacheKey({ text, targetLang, sourceHint, specialHint });
 
@@ -725,27 +749,6 @@ async function saveTranslationCache({
     `,
     [cacheKey, text, targetLang, sourceHint, "normal", translatedText]
   );
-}
-
-function buildMultiTargetCacheKey({
-  text,
-  targetLangs,
-  sourceHint = "auto",
-  specialHint = "",
-}) {
-  return crypto
-    .createHash("sha1")
-    .update(
-      [
-        CACHE_VERSION,
-        "multi",
-        String(sourceHint),
-        [...targetLangs].sort().join(","),
-        String(specialHint),
-        String(text),
-      ].join("__")
-    )
-    .digest("hex");
 }
 
 async function getMultiTranslationCache({
@@ -1395,6 +1398,16 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS member_profiles (
+      user_id TEXT PRIMARY KEY,
+      display_name TEXT,
+      picture_url TEXT,
+      status_message TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }
 
 async function getGroup(chatId) {
@@ -1512,6 +1525,139 @@ async function savePlan(plan) {
       plan.trial_type ?? null,
     ]
   );
+}
+
+async function getMemberProfileDb(userId) {
+  if (!userId) return null;
+
+  const result = await pool.query(
+    `
+    SELECT user_id, display_name, picture_url, status_message, updated_at
+    FROM member_profiles
+    WHERE user_id = $1
+    `,
+    [userId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function saveMemberProfileDb({
+  user_id,
+  display_name = "",
+  picture_url = "",
+  status_message = "",
+}) {
+  if (!user_id) return;
+
+  await pool.query(
+    `
+    INSERT INTO member_profiles (user_id, display_name, picture_url, status_message, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (user_id)
+    DO UPDATE SET
+      display_name = EXCLUDED.display_name,
+      picture_url = EXCLUDED.picture_url,
+      status_message = EXCLUDED.status_message,
+      updated_at = NOW()
+    `,
+    [user_id, display_name, picture_url, status_message]
+  );
+}
+
+async function fetchUserProfileFromApiByUserId(userId) {
+  if (!userId) return null;
+
+  try {
+    const p = await lineClient.getProfile(userId);
+    return {
+      user_id: userId,
+      display_name: p?.displayName || "",
+      picture_url: p?.pictureUrl || "",
+      status_message: p?.statusMessage || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchUserProfileFromEvent(event) {
+  const userId = event?.source?.userId;
+  if (!userId) return null;
+
+  try {
+    if (event.source.groupId) {
+      const p = await lineClient.getGroupMemberProfile(event.source.groupId, userId);
+      return {
+        user_id: userId,
+        display_name: p?.displayName || "",
+        picture_url: p?.pictureUrl || "",
+        status_message: p?.statusMessage || "",
+      };
+    }
+
+    if (event.source.roomId) {
+      const p = await lineClient.getRoomMemberProfile(event.source.roomId, userId);
+      return {
+        user_id: userId,
+        display_name: p?.displayName || "",
+        picture_url: p?.pictureUrl || "",
+        status_message: p?.statusMessage || "",
+      };
+    }
+
+    const p = await lineClient.getProfile(userId);
+    return {
+      user_id: userId,
+      display_name: p?.displayName || "",
+      picture_url: p?.pictureUrl || "",
+      status_message: p?.statusMessage || "",
+    };
+  } catch {
+    return fetchUserProfileFromApiByUserId(userId);
+  }
+}
+
+async function captureEventUserProfile(event, { force = false } = {}) {
+  const userId = event?.source?.userId;
+  if (!userId) return null;
+
+  if (!force) {
+    const stored = await getMemberProfileDb(userId);
+    if (stored?.display_name) return stored;
+  }
+
+  const profile = await fetchUserProfileFromEvent(event);
+  if (profile?.display_name) {
+    await saveMemberProfileDb(profile);
+  }
+
+  return profile;
+}
+
+async function resolveLineDisplayName({
+  userId,
+  event = null,
+  lineDisplayName = "",
+}) {
+  if (lineDisplayName) return lineDisplayName;
+  if (!userId) return "";
+
+  if (event?.source?.userId === userId) {
+    const eventProfile = await captureEventUserProfile(event);
+    if (eventProfile?.display_name) return eventProfile.display_name;
+  }
+
+  const stored = await getMemberProfileDb(userId);
+  if (stored?.display_name) return stored.display_name;
+
+  const fetched = await fetchUserProfileFromApiByUserId(userId);
+  if (fetched?.display_name) {
+    await saveMemberProfileDb(fetched);
+    return fetched.display_name;
+  }
+
+  return "";
 }
 
 function bindGroupToOwner(plan, groupId) {
@@ -1726,6 +1872,16 @@ async function getAllPlans(page = 1, pageSize = MEMBER_LIST_PAGE_SIZE) {
     `,
     [safePageSize, offset]
   );
+
+  return {
+    rows: result.rows || [],
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+  };
+}
+
 async function getAllPlansNoPaging() {
   const result = await pool.query(`
     SELECT user_id, plan_type, group_limit, vip_expires_at, bound_groups,
@@ -1740,13 +1896,82 @@ async function getAllPlansNoPaging() {
 
   return result.rows || [];
 }
-  return {
-    rows: result.rows || [],
-    total,
-    page: safePage,
-    pageSize: safePageSize,
-    totalPages: Math.max(1, Math.ceil(total / safePageSize)),
-  };
+
+async function syncMemberToGoogleSheet({
+  userId,
+  event = null,
+  memberName = "",
+  lineDisplayName = "",
+  lineCustomId = "",
+  note = "",
+  openedAt = "",
+} = {}) {
+  try {
+    if (!GOOGLE_SHEETS_WEBHOOK_URL || !userId) {
+      console.error("syncMemberToGoogleSheet missing url or userId", {
+        hasWebhookUrl: !!GOOGLE_SHEETS_WEBHOOK_URL,
+        userId,
+      });
+      return false;
+    }
+
+    const plan = await getPlan(userId);
+    if (!plan) {
+      console.error("syncMemberToGoogleSheet no plan", { userId });
+      return false;
+    }
+
+    const resolvedDisplayName = await resolveLineDisplayName({
+      userId,
+      event,
+      lineDisplayName,
+    });
+
+    const payload = {
+      userId,
+      memberName: memberName || resolvedDisplayName || "",
+      lineDisplayName: resolvedDisplayName || "",
+      lineCustomId,
+      planType: getPlanDisplayLabel(plan),
+      planCode: plan.plan_type || "",
+      trialType: plan.trial_type || "",
+      groupLimit:
+        plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
+          ? "不限"
+          : String(plan.group_limit ?? "1"),
+      boundGroupCount: Array.isArray(plan.bound_groups)
+        ? plan.bound_groups.length
+        : 0,
+      openedAt: openedAt || getNowTaipeiString(),
+      expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
+      vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
+      note,
+    };
+
+    console.log("[syncMemberToGoogleSheet] payload =", payload);
+
+    const resp = await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const bodyText = await resp.text().catch(() => "");
+
+    console.log("[syncMemberToGoogleSheet] response =", {
+      status: resp.status,
+      ok: resp.ok,
+      bodyText,
+    });
+
+    return resp.ok;
+  } catch (err) {
+    console.error("syncMemberToGoogleSheet error =", err);
+    if (err?.stack) console.error(err.stack);
+    return false;
+  }
 }
 
 function buildStatusText(group, plan) {
@@ -1866,47 +2091,6 @@ function buildAdminHelpText(superAdmin) {
   }
 
   return lines.join("\n");
-}
-
-async function syncMemberToGoogleSheet({ userId, note = "" } = {}) {
-  try {
-    if (!GOOGLE_SHEETS_WEBHOOK_URL || !userId) return;
-
-    const plan = await getPlan(userId);
-    if (!plan) return;
-
-    const payload = {
-      userId,
-      planType: getPlanDisplayLabel(plan),
-      planCode: plan.plan_type || "",
-      trialType: plan.trial_type || "",
-      groupLimit:
-        plan.plan_type === "unlimited_groups" || plan.plan_type === "trial_7days"
-          ? "不限"
-          : String(plan.group_limit ?? "1"),
-      boundGroupCount: Array.isArray(plan.bound_groups) ? plan.bound_groups.length : 0,
-      openedAt: new Date().toLocaleString("zh-TW", {
-        timeZone: "Asia/Taipei",
-        hour12: false,
-      }),
-      expiresAt: plan.vip_expires_at ? formatDateTime(plan.vip_expires_at) : "",
-      vipStatus: isPlanActive(plan) ? "有效" : "已到期 / 未開通",
-      note,
-    };
-
-    const resp = await fetch(GOOGLE_SHEETS_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!resp.ok) {
-      throw new Error(`Google Sheets webhook failed: ${resp.status}`);
-    }
-  } catch (err) {
-    console.error("syncMemberToGoogleSheet error =", err);
-    if (err?.stack) console.error(err.stack);
-  }
 }
 
 async function replyText(replyToken, text) {
@@ -2309,7 +2493,10 @@ async function handleCommand(event, rawText) {
   const superAdmin = isSuperAdmin(userId);
 
   if (cmd === "/help" || cmd === "/幫助") {
-    await replyText(event.replyToken, admin || superAdmin ? buildAdminHelpText(superAdmin) : buildUserHelpText());
+    await replyText(
+      event.replyToken,
+      admin || superAdmin ? buildAdminHelpText(superAdmin) : buildUserHelpText()
+    );
     return true;
   }
 
@@ -2419,37 +2606,7 @@ async function handleCommand(event, rawText) {
       await replyText(event.replyToken, "只有最高管理員可以操作。");
       return true;
     }
-if (cmd === "/同步全部會員") {
-  if (!superAdmin) {
-    await replyText(event.replyToken, "只有最高管理員可以操作。");
-    return true;
-  }
 
-  const allPlans = await getAllPlansNoPaging();
-
-  if (!allPlans.length) {
-    await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
-    return true;
-  }
-
-  let successCount = 0;
-
-  for (const planItem of allPlans) {
-    await syncMemberToGoogleSheet({
-      userId: planItem.user_id,
-      note: "手動同步全部會員",
-    });
-
-    successCount += 1;
-  }
-
-  await replyText(
-    event.replyToken,
-    `已同步全部會員到 Google 試算表\n共 ${successCount} 筆`
-  );
-
-  return true;
-}
     const page = parsePositiveInt(arg, 1);
     const result = await getAllPlans(page, MEMBER_LIST_PAGE_SIZE);
 
@@ -2462,6 +2619,47 @@ if (cmd === "/同步全部會員") {
       event.replyToken,
       buildAllPlansText(result.rows, result.page, result.totalPages, result.total)
     );
+    return true;
+  }
+
+  if (cmd === "/同步全部會員") {
+    if (!superAdmin) {
+      await replyText(event.replyToken, "只有最高管理員可以操作。");
+      return true;
+    }
+
+    const allPlans = await getAllPlansNoPaging();
+
+    if (!allPlans.length) {
+      await replyText(event.replyToken, "目前沒有任何會員資料可同步。");
+      return true;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const planItem of allPlans) {
+      const ok = await syncMemberToGoogleSheet({
+        userId: planItem.user_id,
+        event,
+        note: "手動同步全部會員",
+      });
+
+      if (ok) successCount += 1;
+      else failCount += 1;
+    }
+
+    await replyText(
+      event.replyToken,
+      [
+        "同步全部會員完成",
+        `成功：${successCount} 筆`,
+        `失敗：${failCount} 筆`,
+        "",
+        "如果失敗不是 0，請到 Render Logs 搜尋 [syncMemberToGoogleSheet] response。",
+      ].join("\n")
+    );
+
     return true;
   }
 
@@ -2606,7 +2804,12 @@ if (cmd === "/同步全部會員") {
     });
 
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: arg, note: "開通1群30天" });
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      event,
+      openedAt: getNowTaipeiString(),
+      note: "開通1群30天",
+    });
 
     await replyText(
       event.replyToken,
@@ -2637,7 +2840,12 @@ if (cmd === "/同步全部會員") {
     );
 
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: targetUserId, note: "開通不限30天" });
+    await syncMemberToGoogleSheet({
+      userId: targetUserId,
+      event,
+      openedAt: getNowTaipeiString(),
+      note: "開通不限30天",
+    });
 
     await replyText(
       event.replyToken,
@@ -2661,7 +2869,12 @@ if (cmd === "/同步全部會員") {
     const nextPlan = create7DayTrialPlanObject(arg, oldPlan);
 
     await savePlan(nextPlan);
-    await syncMemberToGoogleSheet({ userId: arg, note: "試用7天" });
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      event,
+      openedAt: getNowTaipeiString(),
+      note: "試用7天",
+    });
 
     await replyText(
       event.replyToken,
@@ -2721,7 +2934,11 @@ if (cmd === "/同步全部會員") {
     const disabled = disablePlanObject(current, arg);
 
     await savePlan(disabled);
-    await syncMemberToGoogleSheet({ userId: arg, note: "停用方案" });
+    await syncMemberToGoogleSheet({
+      userId: arg,
+      event,
+      note: "停用方案",
+    });
 
     await replyText(event.replyToken, `已停用方案：${arg}`);
     return true;
@@ -2926,6 +3143,13 @@ async function handleEvent(event) {
   const eventType = event?.type || "unknown";
 
   try {
+    if (event?.source?.userId) {
+      void captureEventUserProfile(event).catch((profileErr) => {
+        console.error("captureEventUserProfile error =", profileErr);
+        if (profileErr?.stack) console.error(profileErr.stack);
+      });
+    }
+
     if (event.type === "join") {
       await handleJoin(event);
       return;
