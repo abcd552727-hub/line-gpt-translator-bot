@@ -68,7 +68,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 
-const CACHE_VERSION = "v12-skip-same-language-fix";
+const CACHE_VERSION = "v13-code-skip-thai-particle-clean";
 const MEMBER_LIST_PAGE_SIZE = 10;
 
 const SUPER_ADMINS = [
@@ -359,31 +359,7 @@ function hasKorean(text = "") {
   return /[\uAC00-\uD7AF]/.test(String(text || ""));
 }
 
-function hasMyanmar(text = "") {
-  return /[\u1000-\u109F]/.test(String(text || ""));
-}
-
-function hasKhmer(text = "") {
-  return /[\u1780-\u17FF]/.test(String(text || ""));
-}
-
-function hasLao(text = "") {
-  return /[\u0E80-\u0EFF]/.test(String(text || ""));
-}
-
-function hasArabic(text = "") {
-  return /[\u0600-\u06FF]/.test(String(text || ""));
-}
-
-function hasHindi(text = "") {
-  return /[\u0900-\u097F]/.test(String(text || ""));
-}
-
-function hasLatin(text = "") {
-  return /[A-Za-z]/.test(String(text || ""));
-}
-
-function isMixedChineseThai(text = "") {
+function hasMixedChineseThai(text = "") {
   return hasChinese(text) && hasThai(text);
 }
 
@@ -407,6 +383,21 @@ function isSameText(a = "", b = "") {
   return normalizeComparableText(a) === normalizeComparableText(b);
 }
 
+function looksLikeOperationalCode(text = "") {
+  const t = String(text || "")
+    .trim()
+    .replace(/\s+/g, "");
+
+  if (!t) return true;
+
+  if (/^(in|out|up|down)\d{1,4}$/i.test(t)) return true;
+  if (/^(出|進|进|入|上|下)\d{1,4}$/.test(t)) return true;
+  if (/^[A-Za-z]{1,3}\d{1,4}$/.test(t)) return true;
+  if (/^\d+$/.test(t)) return true;
+
+  return false;
+}
+
 function isOnlySymbolOrNumber(text = "") {
   const clean = String(text || "")
     .replace(/https?:\/\/\S+/g, "")
@@ -414,6 +405,8 @@ function isOnlySymbolOrNumber(text = "") {
     .trim();
 
   if (!clean) return true;
+
+  if (looksLikeOperationalCode(clean)) return true;
 
   return !/[A-Za-z\u3400-\u9FFF\u0E00-\u0E7F\u3040-\u30FF\uAC00-\uD7AF\u1000-\u109F\u1780-\u17FF\u0E80-\u0EFF\u0600-\u06FF\u0900-\u097F]/.test(
     clean
@@ -470,9 +463,17 @@ function isSameLanguageGroup(sourceLang, targetLang) {
 
 function shouldSkipTranslationTarget(text = "", targetLang = "") {
   if (!text || !targetLang) return true;
-  if (isOnlySymbolOrNumber(text)) return true;
 
-  const sourceLang = detectSourceLangSimple(text);
+  const raw = String(text || "").trim();
+
+  if (looksLikeOperationalCode(raw)) {
+    console.log(`[translate-skip-code] text=${raw}`);
+    return true;
+  }
+
+  if (isOnlySymbolOrNumber(raw)) return true;
+
+  const sourceLang = detectSourceLangSimple(raw);
 
   if (isSameLanguageGroup(sourceLang, targetLang)) {
     return true;
@@ -570,10 +571,18 @@ function cleanupResidualThaiInChinese(text = "", fixedTerms = []) {
   out = out
     .replace(/นะคะ/g, "喔")
     .replace(/นะครับ/g, "喔")
+    .replace(/นะ/g, "喔")
+    .replace(/น้า/g, "喔")
     .replace(/ค่ะ/g, "喔")
     .replace(/ครับ/g, "喔")
     .replace(/คะ/g, "嗎")
+    .replace(/จ้า/g, "喔")
+    .replace(/จ๋า/g, "喔")
+    .replace(/เด้อ/g, "喔")
+    .replace(/เน้อ/g, "喔")
     .trim();
+
+  out = out.replace(/[\u0E00-\u0E7F]+/g, "").trim();
 
   for (const { token, value } of placeholders) {
     out = out.split(token).join(value);
@@ -702,7 +711,7 @@ function buildStableInstructions({ targetLang, specialHint = "" }) {
 5. 不可把原文和翻譯一起輸出
 6. 要保留原句強度、語氣、簡短程度
 7. 聊天句要自然，但不可擴寫
-8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ
+8. 若目標語言是中文，不可殘留泰文語氣詞，例如 คะ / ค่ะ / ครับ / นะ
 9. 若目標語言是泰文，不可混入中文；但 LINE @標記、網址、email、LINE ID 可以原樣保留
 10. 若目標語言是英文，不可混入中文或泰文；但 LINE @標記、網址、email、LINE ID 可以原樣保留
 11. 普通句子、口語、威脅語、髒話、短句都必須完整翻譯，不可以保留原文
@@ -751,7 +760,7 @@ function buildMultiStableInstructions({ targetLangs, specialHint = "" }) {
 特別注意：
 - 目標是 th 時，輸出必須是純泰文，不可含「一個」「打一個」「來」這類中文。
 - 例如中文「來一個打一個」必須翻成泰文意思，不可以照抄中文。
-- 目標是 zh-TW / zh-CN 時，輸出必須是純中文，不可含 คะ / ค่ะ / ครับ。
+- 目標是 zh-TW / zh-CN 時，輸出必須是純中文，不可含 คะ / ค่ะ / ครับ / นะ。
 
 補充提示：
 ${specialHint || "無"}
@@ -946,7 +955,7 @@ function collectSpecialHint(text, targetLang = null) {
   const sourceLang = detectSourceLangSimple(text);
   const thaiShortChat = looksLikeThaiShortChat(text);
   const thaiDialect = looksLikeThaiDialectText(text);
-  const mixedZhTh = isMixedChineseThai(text);
+  const mixedZhTh = hasMixedChineseThai(text);
   const namedEntityShort = looksLikeNamedEntityShortText(text);
   const fixedTerms = getMatchedFixedTerms(text);
 
@@ -1162,7 +1171,7 @@ async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
 
 重要規則：
 1. 所有泰文都必須翻成中文，不可殘留任何泰文字
-2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ」也必須翻掉，不可保留原文
+2. 包含語氣詞、禮貌詞如「คะ / ค่ะ / ครับ / นะ」也必須翻掉，不可保留原文
 3. 像「ไม่ค่ะ / ไม่ครับ」這類否定短句，要翻成自然中文口語，例如「不是喔 / 沒有喔 / 不要喔」，依語境判斷，不可逐字硬翻
 4. 像「ได้ค่ะ / ได้ครับ」這類肯定短句，要翻成「可以喔 / 好喔 / 有喔」等自然中文
 5. 像「ยัง / ยังค่ะ / ยังครับ」這類短句非常依賴上下文：
@@ -1183,7 +1192,7 @@ ${
 async function translateToTarget(text, targetLang) {
   if (shouldSkipTranslationTarget(text, targetLang)) {
     console.log(
-      `[translate-skip] target=${targetLang} source=${detectSourceLangSimple(text)} reason=same-language-or-empty`
+      `[translate-skip] target=${targetLang} source=${detectSourceLangSimple(text)} reason=same-language-code-or-empty`
     );
     return "";
   }
@@ -1245,7 +1254,7 @@ async function translateToTarget(text, targetLang) {
         extraHints.push("只可輸出純泰文，不可出現中文；但 LINE @標記可以原樣保留。");
       } else if (targetLang === "zh-TW" || targetLang === "zh-CN") {
         extraHints.push(
-          "只可輸出純中文，不可出現任何泰文；包含「คะ / ค่ะ / ครับ」也必須翻成中文語氣。"
+          "只可輸出純中文，不可出現任何泰文；包含「คะ / ค่ะ / ครับ / นะ」也必須翻成中文語氣。"
         );
       } else if (targetLang === "en") {
         extraHints.push("只可輸出純英文，不可出現中文或泰文；但 LINE @標記可以原樣保留。");
@@ -1304,7 +1313,7 @@ async function translateToTargets(text, targetLangs) {
   const repairOne = async (lang, value) => {
     if (shouldSkipTranslationTarget(text, lang)) {
       console.log(
-        `[multi-translation-skip] lang=${lang} source=${detectSourceLangSimple(text)} reason=same-language-or-empty`
+        `[multi-translation-skip] lang=${lang} source=${detectSourceLangSimple(text)} reason=same-language-code-or-empty`
       );
       return "";
     }
