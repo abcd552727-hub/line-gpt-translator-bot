@@ -68,7 +68,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 
-const CACHE_VERSION = "v11-complete-syncfix";
+const CACHE_VERSION = "v12-skip-same-language-fix";
 const MEMBER_LIST_PAGE_SIZE = 10;
 
 const SUPER_ADMINS = [
@@ -344,11 +344,43 @@ function canUseGroup(plan, groupId) {
 }
 
 function hasChinese(text = "") {
-  return /[\u4E00-\u9FFF]/.test(String(text || ""));
+  return /[\u3400-\u9FFF\uF900-\uFAFF]/.test(String(text || ""));
 }
 
 function hasThai(text = "") {
   return /[\u0E00-\u0E7F]/.test(String(text || ""));
+}
+
+function hasJapanese(text = "") {
+  return /[\u3040-\u30FF\u31F0-\u31FF]/.test(String(text || ""));
+}
+
+function hasKorean(text = "") {
+  return /[\uAC00-\uD7AF]/.test(String(text || ""));
+}
+
+function hasMyanmar(text = "") {
+  return /[\u1000-\u109F]/.test(String(text || ""));
+}
+
+function hasKhmer(text = "") {
+  return /[\u1780-\u17FF]/.test(String(text || ""));
+}
+
+function hasLao(text = "") {
+  return /[\u0E80-\u0EFF]/.test(String(text || ""));
+}
+
+function hasArabic(text = "") {
+  return /[\u0600-\u06FF]/.test(String(text || ""));
+}
+
+function hasHindi(text = "") {
+  return /[\u0900-\u097F]/.test(String(text || ""));
+}
+
+function hasLatin(text = "") {
+  return /[A-Za-z]/.test(String(text || ""));
 }
 
 function isMixedChineseThai(text = "") {
@@ -366,13 +398,92 @@ function cleanupTranslation(text = "") {
 function normalizeComparableText(text = "") {
   return cleanupTranslation(text)
     .replace(/\s+/g, "")
-    .replace(/[「」『』"'`]/g, "")
+    .replace(/[。！？!?.,，、~～…\-_'"“”‘’`「」『』]/g, "")
     .trim()
     .toLowerCase();
 }
 
 function isSameText(a = "", b = "") {
   return normalizeComparableText(a) === normalizeComparableText(b);
+}
+
+function isOnlySymbolOrNumber(text = "") {
+  const clean = String(text || "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+
+  if (!clean) return true;
+
+  return !/[A-Za-z\u3400-\u9FFF\u0E00-\u0E7F\u3040-\u30FF\uAC00-\uD7AF\u1000-\u109F\u1780-\u17FF\u0E80-\u0EFF\u0600-\u06FF\u0900-\u097F]/.test(
+    clean
+  );
+}
+
+function detectSourceLangSimple(text = "") {
+  const t = String(text || "").trim();
+  if (!t) return "auto";
+
+  const thaiCount = (t.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const chineseCount = (t.match(/[\u3400-\u9FFF\uF900-\uFAFF]/g) || []).length;
+  const latinCount = (t.match(/[A-Za-z]/g) || []).length;
+  const myCount = (t.match(/[\u1000-\u109F]/g) || []).length;
+  const jaCount = (t.match(/[\u3040-\u30FF\u31F0-\u31FF]/g) || []).length;
+  const koCount = (t.match(/[\uAC00-\uD7AF]/g) || []).length;
+  const arCount = (t.match(/[\u0600-\u06FF]/g) || []).length;
+  const hiCount = (t.match(/[\u0900-\u097F]/g) || []).length;
+  const kmCount = (t.match(/[\u1780-\u17FF]/g) || []).length;
+  const loCount = (t.match(/[\u0E80-\u0EFF]/g) || []).length;
+
+  const counts = [
+    ["th", thaiCount],
+    ["zh-TW", chineseCount],
+    ["my", myCount],
+    ["ja", jaCount],
+    ["ko", koCount],
+    ["ar", arCount],
+    ["hi", hiCount],
+    ["km", kmCount],
+    ["lo", loCount],
+    ["en", latinCount],
+  ].sort((a, b) => b[1] - a[1]);
+
+  const [topLang, topCount] = counts[0];
+  if (!topCount || topCount <= 0) return "auto";
+
+  return topLang;
+}
+
+function isSameLanguageGroup(sourceLang, targetLang) {
+  if (!sourceLang || !targetLang) return false;
+  if (sourceLang === "auto" || sourceLang === "unknown") return false;
+
+  if (sourceLang === targetLang) return true;
+
+  const sourceIsChinese = sourceLang === "zh-TW" || sourceLang === "zh-CN";
+  const targetIsChinese = targetLang === "zh-TW" || targetLang === "zh-CN";
+
+  if (sourceIsChinese && targetIsChinese) return true;
+
+  return false;
+}
+
+function shouldSkipTranslationTarget(text = "", targetLang = "") {
+  if (!text || !targetLang) return true;
+  if (isOnlySymbolOrNumber(text)) return true;
+
+  const sourceLang = detectSourceLangSimple(text);
+
+  if (isSameLanguageGroup(sourceLang, targetLang)) {
+    return true;
+  }
+
+  return false;
+}
+
+function filterTranslatableTargets(text = "", targetLangs = []) {
+  const normalizedTargets = normalizeLangList(targetLangs || []);
+  return normalizedTargets.filter((lang) => !shouldSkipTranslationTarget(text, lang));
 }
 
 function dedupeTranslatedOutputs(blocks = []) {
@@ -395,40 +506,6 @@ function dedupeTranslatedOutputs(blocks = []) {
   }
 
   return result;
-}
-
-function detectSourceLangSimple(text = "") {
-  const t = String(text || "").trim();
-  if (!t) return "auto";
-
-  const thaiCount = (t.match(/[\u0E00-\u0E7F]/g) || []).length;
-  const chineseCount = (t.match(/[\u4E00-\u9FFF]/g) || []).length;
-  const latinCount = (t.match(/[A-Za-z]/g) || []).length;
-  const myCount = (t.match(/[\u1000-\u109F]/g) || []).length;
-  const jaCount = (t.match(/[\u3040-\u30FF\u31F0-\u31FF]/g) || []).length;
-  const koCount = (t.match(/[\uAC00-\uD7AF]/g) || []).length;
-  const arCount = (t.match(/[\u0600-\u06FF]/g) || []).length;
-  const hiCount = (t.match(/[\u0900-\u097F]/g) || []).length;
-  const kmCount = (t.match(/[\u1780-\u17FF]/g) || []).length;
-  const loCount = (t.match(/[\u0E80-\u0EFF]/g) || []).length;
-
-  const counts = [
-    ["th", thaiCount],
-    ["zh-TW", chineseCount],
-    ["en", latinCount],
-    ["my", myCount],
-    ["ja", jaCount],
-    ["ko", koCount],
-    ["ar", arCount],
-    ["hi", hiCount],
-    ["km", kmCount],
-    ["lo", loCount],
-  ].sort((a, b) => b[1] - a[1]);
-
-  const [topLang, topCount] = counts[0];
-  if (!topCount || topCount <= 0) return "auto";
-
-  return topLang;
 }
 
 function removeAllowedOriginalTerms(text = "", fixedTerms = []) {
@@ -470,7 +547,9 @@ function hasWrongScriptForTarget(text = "", targetLang, fixedTerms = []) {
   }
 
   if (targetLang === "en") {
-    return /[\u4E00-\u9FFF\u0E00-\u0E7F]/.test(cleanWithoutAllowedTokens);
+    return /[\u3400-\u9FFF\uF900-\uFAFF\u0E00-\u0E7F]/.test(
+      cleanWithoutAllowedTokens
+    );
   }
 
   return false;
@@ -928,6 +1007,10 @@ async function askModelTranslate({
   sourceHint = "auto",
   specialHint = "",
 }) {
+  if (shouldSkipTranslationTarget(text, targetLang)) {
+    return "";
+  }
+
   const cached = await getTranslationCache({
     text,
     targetLang,
@@ -1000,7 +1083,7 @@ async function askModelTranslateMulti({
   sourceHint = "auto",
   specialHint = "",
 }) {
-  const normalizedTargets = normalizeLangList(targetLangs || []);
+  const normalizedTargets = filterTranslatableTargets(text, targetLangs || []);
   if (!normalizedTargets.length) return {};
 
   const cached = await getMultiTranslationCache({
@@ -1059,6 +1142,10 @@ ${contextTypoHint || ""}
 }
 
 async function translateThaiDialectToChinese(text, targetLang = "zh-TW") {
+  if (shouldSkipTranslationTarget(text, targetLang)) {
+    return "";
+  }
+
   const targetName = targetLang === "zh-CN" ? "简体中文" : "繁體中文";
   const fixedTerms = getMatchedFixedTerms(text);
   const allowOriginalTerm = fixedTerms.some((item) => item.target === item.src);
@@ -1094,6 +1181,13 @@ ${
 }
 
 async function translateToTarget(text, targetLang) {
+  if (shouldSkipTranslationTarget(text, targetLang)) {
+    console.log(
+      `[translate-skip] target=${targetLang} source=${detectSourceLangSimple(text)} reason=same-language-or-empty`
+    );
+    return "";
+  }
+
   const { sourceLang, thaiShortChat, thaiDialect, specialHint } =
     collectSpecialHint(text, targetLang);
 
@@ -1123,7 +1217,7 @@ async function translateToTarget(text, targetLang) {
   const shouldRetrySameAsInput = (value) => {
     const clean = cleanupTranslation(value);
     if (!clean) return false;
-    if (sourceLang === targetLang) return false;
+    if (isSameLanguageGroup(sourceLang, targetLang)) return false;
     if (allowWholeOriginalText) return false;
     return isSameText(clean, text);
   };
@@ -1176,22 +1270,45 @@ async function translateToTarget(text, targetLang) {
     output = cleanupResidualThaiInChinese(output, fixedTerms);
   }
 
+  output = cleanupTranslation(output);
+
+  if (!output) return "";
+
+  const finalSameAsInput =
+    !isSameLanguageGroup(sourceLang, targetLang) &&
+    !allowWholeOriginalText &&
+    isSameText(output, text);
+
+  if (finalSameAsInput) {
+    console.warn(
+      `[translate-drop-same-as-input] target=${targetLang} source=${sourceLang} output=${output}`
+    );
+    return "";
+  }
+
   if (hasWrongScriptForTarget(output, targetLang, fixedTerms)) {
     console.warn(`[translate-drop-bad-output] target=${targetLang} output=${output}`);
     return "";
   }
 
-  return cleanupTranslation(output);
+  return output;
 }
 
 async function translateToTargets(text, targetLangs) {
-  const normalizedTargets = normalizeLangList(targetLangs || []);
+  const normalizedTargets = filterTranslatableTargets(text, targetLangs || []);
   if (!normalizedTargets.length) return {};
 
   const { sourceLang, specialHint } = collectSpecialHint(text);
   const fixedTerms = getMatchedFixedTerms(text);
 
   const repairOne = async (lang, value) => {
+    if (shouldSkipTranslationTarget(text, lang)) {
+      console.log(
+        `[multi-translation-skip] lang=${lang} source=${detectSourceLangSimple(text)} reason=same-language-or-empty`
+      );
+      return "";
+    }
+
     let out = cleanupTranslation(value || "");
 
     if (lang === "zh-TW" || lang === "zh-CN") {
@@ -1204,7 +1321,7 @@ async function translateToTargets(text, targetLangs) {
 
     const sameAsInput =
       !!out &&
-      sourceLang !== lang &&
+      !isSameLanguageGroup(sourceLang, lang) &&
       !allowWholeOriginalText &&
       isSameText(out, text);
 
@@ -1226,6 +1343,18 @@ async function translateToTargets(text, targetLangs) {
       if (lang === "zh-TW" || lang === "zh-CN") {
         out = cleanupResidualThaiInChinese(out, fixedTerms);
       }
+    }
+
+    if (!out) return "";
+
+    const stillSameAsInput =
+      !isSameLanguageGroup(sourceLang, lang) &&
+      !allowWholeOriginalText &&
+      isSameText(out, text);
+
+    if (stillSameAsInput) {
+      console.warn(`[multi-translation-drop-same-as-input] lang=${lang} output=${out}`);
+      return "";
     }
 
     if (hasWrongScriptForTarget(out, lang, fixedTerms)) {
@@ -1256,6 +1385,18 @@ ${specialHint || ""}
 
     if (lang === "zh-TW" || lang === "zh-CN") {
       out = cleanupResidualThaiInChinese(out, fixedTerms);
+    }
+
+    if (!out) return "";
+
+    const finalSameAsInput =
+      !isSameLanguageGroup(sourceLang, lang) &&
+      !allowWholeOriginalText &&
+      isSameText(out, text);
+
+    if (finalSameAsInput) {
+      console.warn(`[multi-translation-drop-final-same-as-input] lang=${lang} output=${out}`);
+      return "";
     }
 
     if (hasWrongScriptForTarget(out, lang, fixedTerms)) {
@@ -1323,6 +1464,11 @@ ${specialHint || ""}
   const results = {};
 
   for (const lang of normalizedTargets) {
+    if (shouldSkipTranslationTarget(text, lang)) {
+      results[lang] = "";
+      continue;
+    }
+
     try {
       const single = await translateToTarget(text, lang);
       results[lang] = await repairOne(lang, single);
@@ -3041,17 +3187,21 @@ async function handleTextMessage(event) {
     if (chatType === "user") {
       const sourceLang = detectSourceLangSimple(text);
 
-      let targetLangs = [];
+      let rawTargetLangs = [];
 
       if (sourceLang === "th") {
-        targetLangs = ["zh-TW", "en"];
+        rawTargetLangs = ["zh-TW", "en"];
       } else if (sourceLang === "zh-TW" || sourceLang === "zh-CN") {
-        targetLangs = ["th", "en"];
+        rawTargetLangs = ["th", "en"];
       } else if (sourceLang === "en") {
-        targetLangs = ["zh-TW", "th"];
+        rawTargetLangs = ["zh-TW", "th"];
       } else {
-        targetLangs = ["zh-TW", "th", "en"].filter((lang) => lang !== sourceLang);
+        rawTargetLangs = ["zh-TW", "th", "en"];
       }
+
+      const targetLangs = filterTranslatableTargets(text, rawTargetLangs);
+
+      if (!targetLangs.length) return;
 
       let translatedMap = {};
 
@@ -3088,7 +3238,11 @@ async function handleTextMessage(event) {
     }
 
     const sourceLang = detectSourceLangSimple(text);
-    const langsToTranslate = targetLangs.filter((lang) => lang !== sourceLang);
+    const langsToTranslate = filterTranslatableTargets(text, targetLangs);
+
+    console.log(
+      `[translate-route] source=${sourceLang} groupTargets=${targetLangs.join(",")} finalTargets=${langsToTranslate.join(",")}`
+    );
 
     if (!langsToTranslate.length) return;
 
@@ -3265,6 +3419,7 @@ initDb()
       console.log(
         `Webhook concurrency=${WEBHOOK_EVENT_CONCURRENCY}, translation retries=${MAX_TRANSLATION_RETRIES}, timing=${LOG_TIMING}`
       );
+      console.log(`CACHE_VERSION=${CACHE_VERSION}`);
     });
   })
   .catch((err) => {
