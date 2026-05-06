@@ -68,7 +68,7 @@ const CONTACT_LINE_ID = "aszx88188";
 const GOOGLE_SHEETS_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbwmiEMNs7_RpDTfhL01JnTamnhR7FgiwnWVjRDhQjIn1BO8x5Je50IIt9LcLRyfZ87E2Q/exec";
 
-const CACHE_VERSION = "v13-code-skip-thai-particle-clean";
+const CACHE_VERSION = "v14-operational-code-skip";
 const MEMBER_LIST_PAGE_SIZE = 10;
 
 const SUPER_ADMINS = [
@@ -384,16 +384,52 @@ function isSameText(a = "", b = "") {
 }
 
 function looksLikeOperationalCode(text = "") {
-  const t = String(text || "")
-    .trim()
-    .replace(/\s+/g, "");
+  const raw = String(text || "").trim();
+  const compact = raw.replace(/\s+/g, "");
 
-  if (!t) return true;
+  if (!compact) return true;
 
-  if (/^(in|out|up|down)\d{1,4}$/i.test(t)) return true;
-  if (/^(出|進|进|入|上|下)\d{1,4}$/.test(t)) return true;
-  if (/^[A-Za-z]{1,3}\d{1,4}$/.test(t)) return true;
-  if (/^\d+$/.test(t)) return true;
+  // 純數字：2500、120、3
+  if (/^\d+$/.test(compact)) return true;
+
+  // In3、IN2、Out1、out12
+  if (/^(in|out|up|down)\d{1,8}$/i.test(compact)) return true;
+
+  // In1 2500、IN1-2500、out2 3000、up1:1500
+  if (/^(in|out|up|down)\d{0,4}[\s:：\-]*\d{1,8}$/i.test(raw)) {
+    return true;
+  }
+
+  // 出1、進2、入3、上1、下2
+  if (/^(出|進|进|入|上|下)\d{1,8}$/.test(compact)) return true;
+
+  // 出1 2500、進2-3000、入1:2000
+  if (/^(出|進|进|入|上|下)\d{0,4}[\s:：\-]*\d{1,8}$/.test(raw)) {
+    return true;
+  }
+
+  // A1、B2、C12、S1、SS1
+  if (/^[A-Za-z]{1,4}\d{1,8}$/.test(compact)) return true;
+
+  // A1 2500、S1-3000、B2:1800
+  if (/^[A-Za-z]{1,4}\d{1,4}[\s:：\-]*\d{1,8}$/.test(raw)) {
+    return true;
+  }
+
+  // 120/3S、120/3s、120/3秒、120/3分、120/3min
+  if (/^\d{1,6}[\/:：\-]\d{1,6}(s|sec|秒|m|min|分|分鐘)?$/i.test(compact)) {
+    return true;
+  }
+
+  // 120S、120秒、30分、60min
+  if (/^\d{1,6}(s|sec|秒|m|min|分|分鐘)$/i.test(compact)) {
+    return true;
+  }
+
+  // 20/40/60、1/2/3 這種方案代碼
+  if (/^\d{1,5}(\/\d{1,5}){1,5}$/.test(compact)) {
+    return true;
+  }
 
   return false;
 }
@@ -466,6 +502,8 @@ function shouldSkipTranslationTarget(text = "", targetLang = "") {
 
   const raw = String(text || "").trim();
 
+  // 營運代碼、價格代碼、時間代碼不要翻譯
+  // 例如：In3、In1 2500、出1、120/3S、120/3秒、20/40/60
   if (looksLikeOperationalCode(raw)) {
     console.log(`[translate-skip-code] text=${raw}`);
     return true;
