@@ -171,9 +171,9 @@ const lineConfig = {
 const lineClient = new Client(lineConfig);
 
 const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  timeout: OPENAI_TIMEOUT_MS,
-  maxRetries: OPENAI_MAX_RETRIES,
+  apiKey: process.env.OPENAI_API_KEY,
+  timeout: Number(process.env.OPENAI_TIMEOUT_MS || 7000),
+  maxRetries: Number(process.env.OPENAI_MAX_RETRIES || 0),
 });
 
 const pool = new Pool({
